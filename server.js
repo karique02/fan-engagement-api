@@ -230,7 +230,7 @@ function sendSuccess(
     req,
     {
         statusCode = 200,
-        message = "Request completed successfully",
+        message = "Solicitud completada correctamente.",
         data = null,
     } = {},
 ) {
@@ -248,7 +248,7 @@ function sendError(
     req,
     {
         statusCode = 500,
-        message = "An unexpected error occurred",
+        message = "Ocurrió un error inesperado.",
         data = null,
     } = {},
 ) {
@@ -267,7 +267,7 @@ function authenticateToken(req, res, next) {
     if (!authorization?.startsWith("Bearer ")) {
         return sendError(res, req, {
             statusCode: 401,
-            message: "Authentication token is required",
+            message: "Se requiere token de autenticación",
         });
     }
 
@@ -279,7 +279,7 @@ function authenticateToken(req, res, next) {
     } catch {
         return sendError(res, req, {
             statusCode: 401,
-            message: "Invalid or expired authentication token",
+            message: "Token de autenticación inválido o expirado",
         });
     }
 }
@@ -305,7 +305,7 @@ app.get("/api/v1/health", async (req, res, next) => {
         await pool.query("SELECT 1");
 
         return sendSuccess(res, req, {
-            message: "API and database are running correctly",
+            message: "API y base de datos están funcionando correctamente",
             data: {
                 service: "fan-engagement-api",
             },
@@ -354,7 +354,7 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
             return sendError(res, req, {
                 statusCode: 400,
                 message:
-                    "username, email, password, fullName and cellphone are required",
+                    "El nombre de usuario, correo electrónico, contraseña, nombre completo y número de celular son obligatorios.",
             });
         }
 
@@ -367,7 +367,7 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
             return sendError(res, req, {
                 statusCode: 400,
                 message:
-                    "username must contain 3 to 30 lowercase letters, numbers or underscores",
+                    "El nombre de usuario debe contener entre 3 y 30 caracteres, incluyendo letras minúsculas, números o guiones bajos",
             });
         }
 
@@ -378,14 +378,14 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
         ) {
             return sendError(res, req, {
                 statusCode: 400,
-                message: "email is invalid",
+                message: "El correo electrónico es inválido",
             });
         }
 
         if (password.length < 8) {
             return sendError(res, req, {
                 statusCode: 400,
-                message: "password must contain at least 8 characters",
+                message: "La contraseña debe contener al menos 8 caracteres",
             });
         }
 
@@ -395,7 +395,7 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
         ) {
             return sendError(res, req, {
                 statusCode: 400,
-                message: "fullName must contain between 1 and 300 characters",
+                message: "El nombre completo debe contener entre 1 y 300 caracteres",
             });
         }
 
@@ -406,7 +406,7 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
             return sendError(res, req, {
                 statusCode: 400,
                 message:
-                    "cellphone must contain 7 to 15 digits and may start with +",
+                    "El número de celular debe contener entre 7 y 15 dígitos y puede comenzar con +",
             });
         }
 
@@ -465,14 +465,14 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
             return sendError(res, req, {
                 statusCode: 503,
                 message:
-                    "Account was created, but the verification email could not be sent. Request a new verification email.",
+                    "La cuenta fue creada, pero no se pudo enviar el correo de verificación. Solicite un nuevo correo de verificación.",
             });
         }
 
         return sendSuccess(res, req, {
             statusCode: 201,
             message:
-                "User registered successfully. Verify your email before logging in.",
+                "Usuario registrado exitosamente. Verifique su correo antes de iniciar sesión.",
             data: {
                 user: {
                     id: user.id,
@@ -499,7 +499,7 @@ app.post("/api/v1/auth/register", async (req, res, next) => {
 
             return sendError(res, req, {
                 statusCode: 409,
-                message: `${duplicatedField} is already registered`,
+                message: `${duplicatedField} ya se encuentra registrado.`,
             });
         }
 
@@ -539,7 +539,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
         ) {
             return sendError(res, req, {
                 statusCode: 400,
-                message: "identifier and password are required",
+                message: "El nombre de usuario y la contraseña son obligatorios.",
             });
         }
 
@@ -567,7 +567,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
         if (!user) {
             return sendError(res, req, {
                 statusCode: 401,
-                message: "Invalid credentials",
+                message: "Credenciales inválidas",
             });
         }
 
@@ -579,7 +579,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
         if (!passwordIsValid) {
             return sendError(res, req, {
                 statusCode: 401,
-                message: "Invalid credentials",
+                message: "Credenciales inválidas",
             });
         }
 
@@ -587,7 +587,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
             return sendError(res, req, {
                 statusCode: 403,
                 message:
-                    "Email verification is required before logging in",
+                    "Se requiere verificar el correo electrónico antes de iniciar sesión",
                 data: {
                     state: user.state,
                 },
@@ -607,7 +607,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
         );
 
         return sendSuccess(res, req, {
-            message: "Login completed successfully",
+            message: "Inicio de sesión completado exitosamente",
             data: {
                 accessToken: token,
                 tokenType: "Bearer",
@@ -729,7 +729,7 @@ app.post("/api/v1/auth/resend-email-verification", async (req, res, next) => {
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "email is required",
+                    message: "El correo electrónico es obligatorio.",
                 });
             }
 
@@ -757,7 +757,7 @@ app.post("/api/v1/auth/resend-email-verification", async (req, res, next) => {
             if (!user || user.state !== "created") {
                 return sendSuccess(res, req, {
                     message:
-                        "If the account exists and requires verification, an email has been sent.",
+                        "Si la cuenta existe y requiere verificación, se ha enviado un correo electrónico.",
                 });
             }
 
@@ -784,7 +784,7 @@ app.post("/api/v1/auth/resend-email-verification", async (req, res, next) => {
 
             return sendSuccess(res, req, {
                 message:
-                    "If the account exists and requires verification, an email has been sent.",
+                    "Si la cuenta existe y requiere verificación, se ha enviado un correo electrónico.",
             });
         } catch (error) {
             await client.query("ROLLBACK");
@@ -821,7 +821,7 @@ app.put("/api/v1/users/me/fcm-token", authenticateToken, async (req, res, next) 
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "fcmToken is required",
+                    message: "El token de Firebase es obligatorio.",
                 });
             }
 
@@ -849,12 +849,12 @@ app.put("/api/v1/users/me/fcm-token", authenticateToken, async (req, res, next) 
             if (!user) {
                 return sendError(res, req, {
                     statusCode: 404,
-                    message: "Authenticated user was not found",
+                    message: "El usuario autenticado no fue encontrado",
                 });
             }
 
             return sendSuccess(res, req, {
-                message: "Firebase token updated successfully",
+                message: "Token de Firebase actualizado exitosamente",
                 data: {
                     user: {
                         id: user.id,
@@ -902,12 +902,12 @@ app.delete("/api/v1/users/me/fcm-token", authenticateToken, async (req, res, nex
             if (!user) {
                 return sendError(res, req, {
                     statusCode: 404,
-                    message: "Authenticated user was not found",
+                    message: "El usuario autenticado no fue encontrado",
                 });
             }
 
             return sendSuccess(res, req, {
-                message: "Firebase token deleted successfully",
+                message: "Token de Firebase eliminado exitosamente",
                 data: {
                     user: {
                         id: user.id,
@@ -941,7 +941,7 @@ app.get("/api/v1/products", authenticateToken, async (req, res, next) => {
         `);
 
         return sendSuccess(res, req, {
-            message: "Products retrieved successfully",
+            message: "Productos recuperados exitosamente",
             data: {
                 products: result.rows,
             },
@@ -971,7 +971,7 @@ app.get("/api/v1/promotions", authenticateToken, async (req, res, next) => {
         `);
 
         return sendSuccess(res, req, {
-            message: "Promotions retrieved successfully",
+            message: "Promociones recuperadas exitosamente",
             data: {
                 promotions: result.rows,
             },
@@ -1013,7 +1013,7 @@ app.post("/api/v1/products/interaction", authenticateToken, async (req, res, nex
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "productId must be a positive integer",
+                    message: "El productId debe ser un entero positivo",
                 });
             }
 
@@ -1025,7 +1025,7 @@ app.post("/api/v1/products/interaction", authenticateToken, async (req, res, nex
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "rating must be a number between 1 and 5",
+                    message: "El rating debe ser un número entre 1 y 5",
                 });
             }
 
@@ -1077,7 +1077,7 @@ app.post("/api/v1/products/interaction", authenticateToken, async (req, res, nex
 
             return sendSuccess(res, req, {
                 statusCode: 201,
-                message: "Product interaction registered successfully",
+                message: "Interacción con el producto registrada exitosamente",
                 data: {
                     interaction,
                 },
@@ -1089,7 +1089,7 @@ app.post("/api/v1/products/interaction", authenticateToken, async (req, res, nex
             ) {
                 return sendError(res, req, {
                     statusCode: 404,
-                    message: "Product was not found",
+                    message: "El producto no fue encontrado",
                 });
             }
 
@@ -1099,7 +1099,7 @@ app.post("/api/v1/products/interaction", authenticateToken, async (req, res, nex
             ) {
                 return sendError(res, req, {
                     statusCode: 401,
-                    message: "Authenticated user was not found",
+                    message: "El usuario autenticado no fue encontrado",
                 });
             }
 
@@ -1140,7 +1140,7 @@ app.post("/api/v1/promotions/interaction", authenticateToken, async (req, res, n
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "promotionId must be a positive integer",
+                    message: "El promotionId debe ser un entero positivo",
                 });
             }
 
@@ -1152,7 +1152,7 @@ app.post("/api/v1/promotions/interaction", authenticateToken, async (req, res, n
             ) {
                 return sendError(res, req, {
                     statusCode: 400,
-                    message: "rating must be a number between 1 and 5",
+                    message: "El rating debe ser un número entre 1 y 5",
                 });
             }
 
@@ -1204,7 +1204,7 @@ app.post("/api/v1/promotions/interaction", authenticateToken, async (req, res, n
 
             return sendSuccess(res, req, {
                 statusCode: 201,
-                message: "Promotion interaction registered successfully",
+                message: "Interacción con la promoción registrada exitosamente",
                 data: {
                     interaction,
                 },
@@ -1214,10 +1214,814 @@ app.post("/api/v1/promotions/interaction", authenticateToken, async (req, res, n
                 return sendError(res, req, {
                     statusCode: 404,
                     message:
-                        "Promotion or authenticated user was not found",
+                        "Promoción o usuario autenticado no fueron encontrados",
                 });
             }
 
+            next(error);
+        }
+    },
+);
+
+
+
+/*
+ * Protegido.
+ *
+ * Recupera el carrito actualizado del usuario autenticado.
+ *
+ * Incluye productos y promociones como ítems separados.
+ * Una promoción puede no tener productos asociados.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.get("/api/v1/cart", authenticateToken, async (req, res, next) => {
+    try {
+        const userId = req.authenticatedUser.sub;
+
+        const cartResult = await pool.query(
+            `
+                SELECT
+                    sc.id,
+                    sc.created_at AS "createdAt",
+                    sc.updated_at AS "updatedAt"
+                FROM public.shopping_cart sc
+                WHERE sc.user_id = $1
+                LIMIT 1;
+            `,
+            [userId],
+        );
+
+        const cart = cartResult.rows[0];
+
+        /*
+         * El usuario aún no agregó nada al carrito.
+         * No se crea un carrito vacío solo por consultarlo.
+         */
+        if (!cart) {
+            return sendSuccess(res, req, {
+                message: "Carrito recuperado exitosamente",
+                data: {
+                    cart: {
+                        id: null,
+                        createdAt: null,
+                        updatedAt: null,
+                        items: [],
+                    },
+                },
+            });
+        }
+
+        const itemsResult = await pool.query(
+            `
+                SELECT
+                    sci.id AS "cartItemId",
+                    sci.quantity,
+                    sci.created_at AS "createdAt",
+                    sci.updated_at AS "updatedAt",
+
+                    CASE
+                        WHEN sci.product_id IS NOT NULL THEN 'product'
+                        WHEN sci.promotion_id IS NOT NULL THEN 'promotion'
+                    END AS "itemType",
+
+                    p.id AS "productId",
+                    p.name AS "productName",
+                    p.product_category_id AS "productCategoryId",
+                    pc.name AS "productCategoryName",
+                    p.price AS "productPrice",
+                    p.image AS "productImage",
+                    p.description AS "productDescription",
+
+                    pr.id AS "promotionId",
+                    pr.title AS "promotionTitle",
+                    pr.buy_quantity AS "buyQuantity",
+                    pr.pay_quantity AS "payQuantity",
+                    pr.discount_percentage AS "discountPercentage",
+                    pr.promotion_category_id AS "promotionCategoryId",
+                    prm.name AS "promotionCategoryName",
+                    pr.description AS "promotionDescription",
+                    pr.image AS "promotionImage",
+                    pr.deadline AS "promotionDeadline",
+
+                    CASE
+                        WHEN pr.id IS NOT NULL
+                            AND pr.deadline IS NOT NULL
+                            AND pr.deadline < CURRENT_TIMESTAMP
+                        THEN true
+                        ELSE false
+                    END AS "isPromotionExpired"
+
+                FROM public.shopping_cart_item sci
+
+                LEFT JOIN public.product p
+                    ON p.id = sci.product_id
+
+                LEFT JOIN public.product_category pc
+                    ON pc.id = p.product_category_id
+
+                LEFT JOIN public.promotion pr
+                    ON pr.id = sci.promotion_id
+
+                LEFT JOIN public.promotion_category prm
+                    ON prm.id = pr.promotion_category_id
+
+                WHERE sci.shopping_cart_id = $1
+                ORDER BY sci.created_at DESC;
+            `,
+            [cart.id],
+        );
+
+        const items = itemsResult.rows.map((item) => {
+            const baseItem = {
+                id: item.cartItemId,
+                type: item.itemType,
+                quantity: item.quantity,
+                createdAt: item.createdAt,
+                updatedAt: item.updatedAt,
+            };
+
+            if (item.itemType === "product") {
+                return {
+                    ...baseItem,
+                    product: {
+                        id: item.productId,
+                        name: item.productName,
+                        productCategoryId: item.productCategoryId,
+                        productCategoryName: item.productCategoryName,
+                        price: item.productPrice,
+                        image: item.productImage,
+                        description: item.productDescription,
+                    },
+                    promotion: null,
+                };
+            }
+
+            return {
+                ...baseItem,
+                product: null,
+                promotion: {
+                    id: item.promotionId,
+                    title: item.promotionTitle,
+                    buyQuantity: item.buyQuantity,
+                    payQuantity: item.payQuantity,
+                    discountPercentage: item.discountPercentage,
+                    promotionCategoryId: item.promotionCategoryId,
+                    promotionCategoryName: item.promotionCategoryName,
+                    description: item.promotionDescription,
+                    image: item.promotionImage,
+                    deadline: item.promotionDeadline,
+                    isExpired: item.isPromotionExpired,
+                },
+            };
+        });
+
+        return sendSuccess(res, req, {
+            message: "Carrito recuperado exitosamente",
+            data: {
+                cart: {
+                    id: cart.id,
+                    createdAt: cart.createdAt,
+                    updatedAt: cart.updatedAt,
+                    items,
+                },
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+/*
+ * Protegido.
+ *
+ * Agrega un producto al carrito del usuario autenticado.
+ *
+ * Si el carrito no existe, lo crea.
+ * Si el producto ya existe en el carrito, incrementa su cantidad.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ *
+ * Body:
+ * {
+ *   "productId": 1,
+ *   "quantity": 2
+ * }
+ */
+app.post("/api/v1/cart/products", authenticateToken, async (req, res, next) => {
+        const client = await pool.connect();
+
+        try {
+            const { productId, quantity } = req.body ?? {};
+
+            if (
+                !Number.isSafeInteger(productId) ||
+                productId <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El productId debe ser un entero positivo",
+                });
+            }
+
+            if (
+                !Number.isSafeInteger(quantity) ||
+                quantity <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "La quantity debe ser un entero positivo",
+                });
+            }
+
+            const userId = req.authenticatedUser.sub;
+
+            await client.query("BEGIN");
+
+            /*
+             * Se valida primero para devolver 404 claro
+             * y no depender de un error de foreign key.
+             */
+            const productResult = await client.query(
+                `
+                    SELECT
+                        id,
+                        name,
+                        product_category_id AS "productCategoryId",
+                        price,
+                        image,
+                        description
+                    FROM public.product
+                    WHERE id = $1
+                    LIMIT 1;
+                `,
+                [productId],
+            );
+
+            const product = productResult.rows[0];
+
+            if (!product) {
+                await client.query("ROLLBACK");
+
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message: "El producto no fue encontrado",
+                });
+            }
+
+            /*
+             * Un carrito activo por usuario.
+             */
+            const cartResult = await client.query(
+                `
+                    INSERT INTO public.shopping_cart (
+                        user_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        $1,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING id;
+                `,
+                [userId],
+            );
+
+            const cart = cartResult.rows[0];
+
+            /*
+             * Si el producto ya existe dentro del carrito,
+             * aumenta quantity. Si no existe, crea el ítem.
+             *
+             * Requiere el índice único parcial:
+             * uq_shopping_cart_item_product
+             */
+            const cartItemResult = await client.query(
+                `
+                    INSERT INTO public.shopping_cart_item AS sci (
+                        shopping_cart_id,
+                        product_id,
+                        quantity,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (shopping_cart_id, product_id)
+                    WHERE product_id IS NOT NULL
+                    DO UPDATE SET
+                        quantity = sci.quantity + EXCLUDED.quantity,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING
+                        id AS "cartItemId",
+                        shopping_cart_id AS "shoppingCartId",
+                        product_id AS "productId",
+                        quantity,
+                        created_at AS "createdAt",
+                        updated_at AS "updatedAt";
+                `,
+                [
+                    cart.id,
+                    productId,
+                    quantity,
+                ],
+            );
+
+            const cartItem = cartItemResult.rows[0];
+
+            await client.query("COMMIT");
+
+            return sendSuccess(res, req, {
+                statusCode: 201,
+                message: "Producto agregado al carrito exitosamente",
+                data: {
+                    cartItem: {
+                        id: cartItem.cartItemId,
+                        cartId: cartItem.shoppingCartId,
+                        quantity: cartItem.quantity,
+                        createdAt: cartItem.createdAt,
+                        updatedAt: cartItem.updatedAt,
+                        product: {
+                            id: product.id,
+                            name: product.name,
+                            productCategoryId: product.productCategoryId,
+                            price: product.price,
+                            image: product.image,
+                            description: product.description,
+                        },
+                    },
+                },
+            });
+        } catch (error) {
+            await client.query("ROLLBACK");
+            next(error);
+        } finally {
+            client.release();
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Agrega una promoción al carrito del usuario autenticado.
+ *
+ * Si el carrito no existe, lo crea.
+ * Si la promoción ya existe en el carrito, incrementa su cantidad.
+ *
+ * No requiere que la promoción tenga productos asociados.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ *
+ * Body:
+ * {
+ *   "promotionId": 1,
+ *   "quantity": 1
+ * }
+ */
+app.post("/api/v1/cart/promotions", authenticateToken, async (req, res, next) => {
+        const client = await pool.connect();
+
+        try {
+            const { promotionId, quantity } = req.body ?? {};
+
+            if (
+                !Number.isSafeInteger(promotionId) ||
+                promotionId <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El promotionId debe ser un entero positivo",
+                });
+            }
+
+            if (
+                !Number.isSafeInteger(quantity) ||
+                quantity <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "La quantity debe ser un entero positivo",
+                });
+            }
+
+            const userId = req.authenticatedUser.sub;
+
+            await client.query("BEGIN");
+
+            /*
+             * Se valida la existencia y vigencia de la promoción.
+             * No se exige ninguna relación en promotion_product.
+             */
+            const promotionResult = await client.query(
+                `
+                    SELECT
+                        p.id,
+                        p.title,
+                        p.buy_quantity AS "buyQuantity",
+                        p.pay_quantity AS "payQuantity",
+                        p.discount_percentage AS "discountPercentage",
+                        p.promotion_category_id AS "promotionCategoryId",
+                        pc.name AS "promotionCategoryName",
+                        p.description,
+                        p.image,
+                        p.deadline
+                    FROM public.promotion p
+                    INNER JOIN public.promotion_category pc
+                        ON pc.id = p.promotion_category_id
+                    WHERE p.id = $1
+                    LIMIT 1;
+                `,
+                [promotionId],
+            );
+
+            const promotion = promotionResult.rows[0];
+
+            if (!promotion) {
+                await client.query("ROLLBACK");
+
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message: "La promoción no fue encontrada",
+                });
+            }
+
+            if (
+                promotion.deadline !== null &&
+                new Date(promotion.deadline) < new Date()
+            ) {
+                await client.query("ROLLBACK");
+
+                return sendError(res, req, {
+                    statusCode: 409,
+                    message: "La promoción ya venció y no puede agregarse al carrito",
+                });
+            }
+
+            /*
+             * Crea el carrito si el usuario aún no tiene uno.
+             */
+            const cartResult = await client.query(
+                `
+                    INSERT INTO public.shopping_cart (
+                        user_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        $1,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING id;
+                `,
+                [userId],
+            );
+
+            const cart = cartResult.rows[0];
+
+            /*
+             * Si la promoción ya existe en el carrito,
+             * incrementa quantity. Caso contrario, crea el ítem.
+             *
+             * Requiere el índice único parcial:
+             * uq_shopping_cart_item_promotion
+             */
+            const cartItemResult = await client.query(
+                `
+                    INSERT INTO public.shopping_cart_item AS sci (
+                        shopping_cart_id,
+                        promotion_id,
+                        quantity,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (shopping_cart_id, promotion_id)
+                    WHERE promotion_id IS NOT NULL
+                    DO UPDATE SET
+                        quantity = sci.quantity + EXCLUDED.quantity,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING
+                        id AS "cartItemId",
+                        shopping_cart_id AS "shoppingCartId",
+                        promotion_id AS "promotionId",
+                        quantity,
+                        created_at AS "createdAt",
+                        updated_at AS "updatedAt";
+                `,
+                [
+                    cart.id,
+                    promotionId,
+                    quantity,
+                ],
+            );
+
+            const cartItem = cartItemResult.rows[0];
+
+            await client.query("COMMIT");
+
+            return sendSuccess(res, req, {
+                statusCode: 201,
+                message: "Promoción agregada al carrito exitosamente",
+                data: {
+                    cartItem: {
+                        id: cartItem.cartItemId,
+                        cartId: cartItem.shoppingCartId,
+                        quantity: cartItem.quantity,
+                        createdAt: cartItem.createdAt,
+                        updatedAt: cartItem.updatedAt,
+                        promotion: {
+                            id: promotion.id,
+                            title: promotion.title,
+                            buyQuantity: promotion.buyQuantity,
+                            payQuantity: promotion.payQuantity,
+                            discountPercentage: promotion.discountPercentage,
+                            promotionCategoryId:
+                                promotion.promotionCategoryId,
+                            promotionCategoryName:
+                                promotion.promotionCategoryName,
+                            description: promotion.description,
+                            image: promotion.image,
+                            deadline: promotion.deadline,
+                        },
+                    },
+                },
+            });
+        } catch (error) {
+            await client.query("ROLLBACK");
+            next(error);
+        } finally {
+            client.release();
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Actualiza la cantidad de un ítem del carrito
+ * del usuario autenticado.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ *
+ * Params:
+ * {
+ *   "cartItemId": 12
+ * }
+ *
+ * Body:
+ * {
+ *   "quantity": 3
+ * }
+ */
+app.patch("/api/v1/cart/items/:cartItemId", authenticateToken, async (req, res, next) => {
+        try {
+            const cartItemId = Number(req.params.cartItemId);
+            const { quantity } = req.body ?? {};
+            const userId = req.authenticatedUser.sub;
+
+            if (
+                !Number.isSafeInteger(cartItemId) ||
+                cartItemId <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El cartItemId debe ser un entero positivo",
+                });
+            }
+
+            if (
+                !Number.isSafeInteger(quantity) ||
+                quantity <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "La quantity debe ser un entero positivo",
+                });
+            }
+
+            /*
+             * Solo permite modificar ítems del carrito
+             * perteneciente al usuario autenticado.
+             */
+            const result = await pool.query(
+                `
+                    UPDATE public.shopping_cart_item AS sci
+                    SET
+                        quantity = $1,
+                        updated_at = CURRENT_TIMESTAMP
+                    FROM public.shopping_cart AS sc
+                    WHERE sci.id = $2
+                      AND sci.shopping_cart_id = sc.id
+                      AND sc.user_id = $3
+                    RETURNING
+                        sci.id AS "cartItemId",
+                        sci.shopping_cart_id AS "shoppingCartId",
+                        sci.product_id AS "productId",
+                        sci.promotion_id AS "promotionId",
+                        sci.quantity,
+                        sci.created_at AS "createdAt",
+                        sci.updated_at AS "updatedAt";
+                `,
+                [
+                    quantity,
+                    cartItemId,
+                    userId,
+                ],
+            );
+
+            const cartItem = result.rows[0];
+
+            if (!cartItem) {
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message:
+                        "El ítem del carrito no fue encontrado o no pertenece al usuario autenticado",
+                });
+            }
+
+            const itemType =
+                cartItem.productId !== null
+                    ? "product"
+                    : "promotion";
+
+            return sendSuccess(res, req, {
+                message:
+                    "Cantidad del ítem del carrito actualizada exitosamente",
+                data: {
+                    cartItem: {
+                        id: cartItem.cartItemId,
+                        cartId: cartItem.shoppingCartId,
+                        type: itemType,
+                        productId: cartItem.productId,
+                        promotionId: cartItem.promotionId,
+                        quantity: cartItem.quantity,
+                        createdAt: cartItem.createdAt,
+                        updatedAt: cartItem.updatedAt,
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Elimina un ítem específico del carrito
+ * del usuario autenticado.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ *
+ * Params:
+ * {
+ *   "cartItemId": 12
+ * }
+ */
+app.delete("/api/v1/cart/items/:cartItemId", authenticateToken, async (req, res, next) => {
+        try {
+            const cartItemId = Number(req.params.cartItemId);
+            const userId = req.authenticatedUser.sub;
+
+            if (
+                !Number.isSafeInteger(cartItemId) ||
+                cartItemId <= 0
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El cartItemId debe ser un entero positivo",
+                });
+            }
+
+            /*
+             * Solo elimina ítems que pertenezcan al carrito
+             * del usuario autenticado.
+             */
+            const result = await pool.query(
+                `
+                    DELETE FROM public.shopping_cart_item AS sci
+                    USING public.shopping_cart AS sc
+                    WHERE sci.id = $1
+                      AND sci.shopping_cart_id = sc.id
+                      AND sc.user_id = $2
+                    RETURNING
+                        sci.id AS "cartItemId",
+                        sci.shopping_cart_id AS "shoppingCartId",
+                        sci.product_id AS "productId",
+                        sci.promotion_id AS "promotionId",
+                        sci.quantity,
+                        sci.created_at AS "createdAt",
+                        sci.updated_at AS "updatedAt";
+                `,
+                [
+                    cartItemId,
+                    userId,
+                ],
+            );
+
+            const deletedCartItem = result.rows[0];
+
+            if (!deletedCartItem) {
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message:
+                        "El ítem del carrito no fue encontrado o no pertenece al usuario autenticado",
+                });
+            }
+
+            const itemType =
+                deletedCartItem.productId !== null
+                    ? "product"
+                    : "promotion";
+
+            return sendSuccess(res, req, {
+                message: "Ítem eliminado del carrito exitosamente",
+                data: {
+                    deletedCartItem: {
+                        id: deletedCartItem.cartItemId,
+                        cartId: deletedCartItem.shoppingCartId,
+                        type: itemType,
+                        productId: deletedCartItem.productId,
+                        promotionId: deletedCartItem.promotionId,
+                        quantity: deletedCartItem.quantity,
+                        createdAt: deletedCartItem.createdAt,
+                        updatedAt: deletedCartItem.updatedAt,
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Vacía completamente el carrito del usuario autenticado.
+ *
+ * El carrito permanece creado; solo se eliminan sus ítems.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.delete("/api/v1/cart", authenticateToken, async (req, res, next) => {
+        try {
+            const userId = req.authenticatedUser.sub;
+
+            const result = await pool.query(
+                `
+                    DELETE FROM public.shopping_cart_item AS sci
+                    USING public.shopping_cart AS sc
+                    WHERE sci.shopping_cart_id = sc.id
+                      AND sc.user_id = $1
+                    RETURNING sci.id;
+                `,
+                [userId],
+            );
+
+            /*
+             * Se actualiza updated_at solo si el carrito existe.
+             * Aunque no tuviera ítems, sigue siendo una operación válida.
+             */
+            await pool.query(
+                `
+                    UPDATE public.shopping_cart
+                    SET updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = $1;
+                `,
+                [userId],
+            );
+
+            return sendSuccess(res, req, {
+                message: "Carrito vaciado exitosamente",
+                data: {
+                    deletedItemsCount: result.rowCount,
+                },
+            });
+        } catch (error) {
             next(error);
         }
     },
@@ -1231,7 +2035,7 @@ app.post("/api/v1/promotions/interaction", authenticateToken, async (req, res, n
 app.use((req, res) => {
     return sendError(res, req, {
         statusCode: 404,
-        message: "Route not found",
+        message: "Ruta no encontrada",
         data: {
             path: req.originalUrl,
         },
@@ -1245,7 +2049,7 @@ app.use((error, req, res, next) => {
 
     return sendError(res, req, {
         statusCode: 500,
-        message: "Internal server error",
+        message: "Error interno del servidor",
     });
 });
 
