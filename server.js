@@ -285,7 +285,243 @@ function authenticateToken(req, res, next) {
         });
     }
 }
+async function getIntegerParameter(parameterKey, defaultValue) {
+    const result = await pool.query(
+        `
+            SELECT value
+            FROM public.parameters
+            WHERE key = $1
+            LIMIT 1;
+        `,
+        [parameterKey],
+    );
 
+    if (result.rowCount === 0) {
+        return defaultValue;
+    }
+
+    const parsedValue = Number.parseInt(result.rows[0].value, 10);
+
+    if (!Number.isSafeInteger(parsedValue) || parsedValue <= 0) {
+        return defaultValue;
+    }
+
+    return parsedValue;
+}
+async function trainProductRecommendations(client) {
+    await client.query(
+        `
+            DELETE FROM public.user_product_recommendation;
+        `,
+    );
+
+    await client.query(
+        `
+            WITH product_similarity AS (
+                SELECT
+                    upi_a.product_id AS source_product_id,
+                    upi_b.product_id AS recommended_product_id,
+                    (
+                        SUM(upi_a.rating * upi_b.rating)
+                        /
+                        NULLIF(
+                            SQRT(SUM(upi_a.rating * upi_a.rating))
+                            *
+                            SQRT(SUM(upi_b.rating * upi_b.rating)),
+                            0
+                        )
+                    ) AS similarity_score
+                FROM public.user_product_interaction upi_a
+                INNER JOIN public.user_product_interaction upi_b
+                    ON upi_a.user_id = upi_b.user_id
+                   AND upi_a.product_id <> upi_b.product_id
+                GROUP BY
+                    upi_a.product_id,
+                    upi_b.product_id
+            ),
+            user_candidate_recommendation AS (
+                SELECT
+                    upi.user_id,
+                    ps.recommended_product_id AS product_id,
+                    SUM(upi.rating * ps.similarity_score) AS recommendation_score
+                FROM public.user_product_interaction upi
+                INNER JOIN product_similarity ps
+                    ON ps.source_product_id = upi.product_id
+                GROUP BY
+                    upi.user_id,
+                    ps.recommended_product_id
+            ),
+            ranked_recommendation AS (
+                SELECT
+                    user_id,
+                    product_id,
+                    recommendation_score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY user_id
+                        ORDER BY recommendation_score DESC
+                    ) AS ranking
+                FROM user_candidate_recommendation
+            )
+            INSERT INTO public.user_product_recommendation (
+                user_id,
+                product_id,
+                recommendation_score,
+                generated_at
+            )
+            SELECT
+                user_id,
+                product_id,
+                ROUND(recommendation_score, 6),
+                CURRENT_TIMESTAMP
+            FROM ranked_recommendation
+            WHERE ranking <= 30;
+        `,
+    );
+}
+async function trainPromotionRecommendations(client) {
+    await client.query(
+        `
+            DELETE FROM public.user_promotion_recommendation;
+        `,
+    );
+
+    await client.query(
+        `
+            WITH promotion_similarity AS (
+                SELECT
+                    upi_a.promotion_id AS source_promotion_id,
+                    upi_b.promotion_id AS recommended_promotion_id,
+                    (
+                        SUM(upi_a.rating * upi_b.rating)
+                        /
+                        NULLIF(
+                            SQRT(SUM(upi_a.rating * upi_a.rating))
+                            *
+                            SQRT(SUM(upi_b.rating * upi_b.rating)),
+                            0
+                        )
+                    ) AS similarity_score
+                FROM public.user_promotion_interaction upi_a
+                INNER JOIN public.user_promotion_interaction upi_b
+                    ON upi_a.user_id = upi_b.user_id
+                   AND upi_a.promotion_id <> upi_b.promotion_id
+                GROUP BY
+                    upi_a.promotion_id,
+                    upi_b.promotion_id
+            ),
+            user_candidate_recommendation AS (
+                SELECT
+                    upi.user_id,
+                    ps.recommended_promotion_id AS promotion_id,
+                    SUM(upi.rating * ps.similarity_score) AS recommendation_score
+                FROM public.user_promotion_interaction upi
+                INNER JOIN promotion_similarity ps
+                    ON ps.source_promotion_id = upi.promotion_id
+                GROUP BY
+                    upi.user_id,
+                    ps.recommended_promotion_id
+            ),
+            ranked_recommendation AS (
+                SELECT
+                    user_id,
+                    promotion_id,
+                    recommendation_score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY user_id
+                        ORDER BY recommendation_score DESC
+                    ) AS ranking
+                FROM user_candidate_recommendation
+            )
+            INSERT INTO public.user_promotion_recommendation (
+                user_id,
+                promotion_id,
+                recommendation_score,
+                generated_at
+            )
+            SELECT
+                user_id,
+                promotion_id,
+                ROUND(recommendation_score, 6),
+                CURRENT_TIMESTAMP
+            FROM ranked_recommendation
+            WHERE ranking <= 30;
+        `,
+    );
+}
+let isCollaborativeFilteringTrainingRunning = false;
+async function trainCollaborativeFiltering() {
+    if (isCollaborativeFilteringTrainingRunning) {
+        console.log("Collaborative filtering training skipped because another training is already running");
+        return {
+            skipped: true,
+            reason: "Training already running",
+        };
+    }
+
+    isCollaborativeFilteringTrainingRunning = true;
+
+    const client = await pool.connect();
+
+    try {
+        const startedAt = new Date();
+
+        await client.query("BEGIN");
+
+        await trainProductRecommendations(client);
+        await trainPromotionRecommendations(client);
+
+        await client.query("COMMIT");
+
+        const finishedAt = new Date();
+
+        console.log("Collaborative filtering training completed", {
+            startedAt,
+            finishedAt,
+        });
+
+        return {
+            skipped: false,
+            startedAt,
+            finishedAt,
+        };
+    } catch (error) {
+        await client.query("ROLLBACK");
+
+        console.error("Collaborative filtering training failed", error);
+
+        throw error;
+    } finally {
+        client.release();
+        isCollaborativeFilteringTrainingRunning = false;
+    }
+}
+function startCollaborativeFilteringTrainingScheduler() {
+    const executeTrainingCycle = async () => {
+        let intervalMinutes = 10;
+
+        try {
+            intervalMinutes = await getIntegerParameter(
+                "collaborative_filtering_training_interval_minutes",
+                10,
+            );
+
+            console.log(`Starting collaborative filtering training. Next interval: ${intervalMinutes} minutes`);
+
+            await trainCollaborativeFiltering();
+        } catch (error) {
+            console.error("Scheduled collaborative filtering training failed", error);
+        } finally {
+            const nextExecutionDelayMilliseconds = intervalMinutes * 60 * 1000;
+
+            setTimeout(
+                executeTrainingCycle,
+                nextExecutionDelayMilliseconds,
+            );
+        }
+    };
+
+    setTimeout(executeTrainingCycle, 10_000);
+}
 
 
 /*
@@ -2123,6 +2359,129 @@ app.get("/api/v1/promotions/interaction/all", async (req, res, next) => {
 
 
 /*
+ *
+ * Ejecuta manualmente el entrenamiento de filtrado colaborativo.
+ * 
+ */
+app.post("/api/v1/recommendations/train", async (req, res, next) => {
+    try {
+        const result = await trainCollaborativeFiltering();
+
+        return sendSuccess(res, req, {
+            message: result.skipped
+                ? "El entrenamiento fue omitido porque ya hay uno en ejecución"
+                : "Entrenamiento de recomendaciones ejecutado exitosamente",
+            data: result,
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+
+
+/*
+ * Protegido.
+ *
+ * Devuelve las recomendaciones de productos del usuario autenticado.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.get("/api/v1/products/recommendations", authenticateToken, async (req, res, next) => {
+    try {
+        const userId = req.authenticatedUser.sub;
+
+        const result = await pool.query(
+            `
+                SELECT
+                    p.id,
+                    p.name,
+                    p.product_category_id AS "productCategoryId",
+                    pc.name AS "productCategoryName",
+                    p.price,
+                    p.image,
+                    p.description,
+                    upr.recommendation_score AS "recommendationScore",
+                    upr.generated_at AS "generatedAt"
+                FROM public.user_product_recommendation upr
+                INNER JOIN public.product p
+                    ON p.id = upr.product_id
+                INNER JOIN public.product_category pc
+                    ON pc.id = p.product_category_id
+                WHERE upr.user_id = $1
+                ORDER BY
+                    upr.recommendation_score DESC,
+                    p.id ASC
+                LIMIT 30;
+            `,
+            [userId],
+        );
+
+        return sendSuccess(res, req, {
+            message: "Recomendaciones de productos obtenidas exitosamente",
+            data: {
+                products: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+/*
+ * Protegido.
+ *
+ * Devuelve las recomendaciones de promociones del usuario autenticado.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.get("/api/v1/promotions/recommendations", authenticateToken, async (req, res, next) => {
+    try {
+        const userId = req.authenticatedUser.sub;
+
+        const result = await pool.query(
+            `
+                SELECT
+                    pr.id,
+                    pr.title,
+                    pr.buy_quantity AS "buyQuantity",
+                    pr.pay_quantity AS "payQuantity",
+                    pr.discount_percentage AS "discountPercentage",
+                    pr.promotion_category_id AS "promotionCategoryId",
+                    pc.name AS "promotionCategoryName",
+                    pr.description,
+                    pr.image,
+                    upr.recommendation_score AS "recommendationScore",
+                    upr.generated_at AS "generatedAt"
+                FROM public.user_promotion_recommendation upr
+                INNER JOIN public.promotion pr
+                    ON pr.id = upr.promotion_id
+                INNER JOIN public.promotion_category pc
+                    ON pc.id = pr.promotion_category_id
+                WHERE upr.user_id = $1
+                ORDER BY
+                    upr.recommendation_score DESC,
+                    pr.id ASC
+                LIMIT 30;
+            `,
+            [userId],
+        );
+
+        return sendSuccess(res, req, {
+            message: "Recomendaciones de promociones obtenidas exitosamente",
+            data: {
+                promotions: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+
+
+/*
  * Ruta no encontrada.
  */
 app.use((req, res) => {
@@ -2150,4 +2509,6 @@ app.use((error, req, res, next) => {
 
 app.listen(port, host, () => {
     console.log(`Server running on port ${port}`);
+
+    startCollaborativeFilteringTrainingScheduler();
 });
