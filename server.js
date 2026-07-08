@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const cors = require("cors");
 const { Pool } = require("pg");
 const argon2 = require("argon2");
 const jwt = require("jsonwebtoken");
@@ -8,6 +9,9 @@ const crypto = require("node:crypto");
 const nodemailer = require("nodemailer");
 
 const app = express();
+
+app.use(cors());
+app.use(express.json());
 
 const port = process.env.PORT || 3000;
 const host = "0.0.0.0";
@@ -42,8 +46,6 @@ const pool = new Pool({
         ? { rejectUnauthorized: false }
         : false,
 });
-
-app.use(express.json());
 
 
 
