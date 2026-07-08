@@ -2030,6 +2030,97 @@ app.delete("/api/v1/cart", authenticateToken, async (req, res, next) => {
 
 
 /*
+ * Público.
+ *
+ * Recupera todas las interacciones entre usuarios y productos.
+ *
+ * Devuelve los datos de user_product_interaction,
+ * junto con el username del usuario y el nombre del producto.
+ *
+ * No requiere autenticación.
+ */
+app.get("/api/v1/products/interaction/all", async (req, res, next) => {
+    try {
+        const result = await pool.query(
+            `
+                SELECT
+                    upi.user_id AS "userId",
+                    u.username AS "username",
+                    upi.product_id AS "productId",
+                    p.name AS "productName",
+                    upi.rating,
+                    upi.interaction_count AS "interactionCount",
+                    upi.last_interaction_at AS "lastInteractionAt"
+                FROM public.user_product_interaction upi
+                INNER JOIN public."user" u
+                    ON u.id = upi.user_id
+                INNER JOIN public.product p
+                    ON p.id = upi.product_id
+                ORDER BY
+                    upi.last_interaction_at DESC,
+                    upi.user_id ASC,
+                    upi.product_id ASC;
+            `,
+        );
+
+        return sendSuccess(res, req, {
+            message: "Interacciones con productos recuperadas exitosamente",
+            data: {
+                interactions: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+/*
+ * Público.
+ *
+ * Recupera todas las interacciones entre usuarios y promociones.
+ *
+ * Devuelve los datos de user_promotion_interaction,
+ * junto con el username del usuario y el título de la promoción.
+ *
+ * No requiere autenticación.
+ */
+app.get("/api/v1/promotions/interaction/all", async (req, res, next) => {
+    try {
+        const result = await pool.query(
+            `
+                SELECT
+                    upi.user_id AS "userId",
+                    u.username AS "username",
+                    upi.promotion_id AS "promotionId",
+                    p.title AS "promotionTitle",
+                    upi.rating,
+                    upi.interaction_count AS "interactionCount",
+                    upi.last_interaction_at AS "lastInteractionAt"
+                FROM public.user_promotion_interaction upi
+                INNER JOIN public."user" u
+                    ON u.id = upi.user_id
+                INNER JOIN public.promotion p
+                    ON p.id = upi.promotion_id
+                ORDER BY
+                    upi.last_interaction_at DESC,
+                    upi.user_id ASC,
+                    upi.promotion_id ASC;
+            `,
+        );
+
+        return sendSuccess(res, req, {
+            message: "Interacciones con promociones recuperadas exitosamente",
+            data: {
+                interactions: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+
+
+/*
  * Ruta no encontrada.
  */
 app.use((req, res) => {
