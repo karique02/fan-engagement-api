@@ -791,7 +791,8 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
                 full_name,
                 cellphone,
                 password_hash,
-                state
+                state,
+                user_type
             FROM public."user"
             WHERE LOWER(username) = $1
                OR LOWER(email) = $1
@@ -857,6 +858,7 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
                     fullName: user.full_name,
                     cellphone: user.cellphone,
                     state: user.state,
+                    userType: Number(user.user_type),
                 },
             },
         });
