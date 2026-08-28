@@ -2270,9 +2270,111 @@ app.delete("/api/v1/cart", authenticateToken, async (req, res, next) => {
 
 
 /*
+ * Filtrado/paginado compartido por los endpoints de listado de interacciones
+ * (products/interaction/all, promotions/interaction/all).
+ *
+ * Valida los query params y responde el error 400 correspondiente si alguno
+ * es inválido. Devuelve `null` cuando ya se envió una respuesta de error
+ * (el caller debe simplemente `return` en ese caso) o el objeto de filtros
+ * ya parseado/normalizado en caso contrario.
+ */
+const INTERACTION_TEXT_FILTER_REGEX = /^[\p{L}0-9 ._-]{0,100}$/u;
+const INTERACTION_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const INTERACTION_PAGE_SIZES = [15, 30, 45];
+
+function parseInteractionListQuery(req, res, { entityParam }) {
+    const query = req.query;
+
+    const readTextFilter = (paramName) => {
+        const raw = query[paramName];
+        if (raw === undefined || raw === null || raw === "") {
+            return { value: undefined };
+        }
+        const value = String(raw);
+        if (!INTERACTION_TEXT_FILTER_REGEX.test(value)) {
+            return {
+                error: `El parámetro '${paramName}' contiene caracteres no permitidos`,
+            };
+        }
+        return { value };
+    };
+
+    const usernameFilter = readTextFilter("username");
+    if (usernameFilter.error) {
+        sendError(res, req, { statusCode: 400, message: usernameFilter.error });
+        return null;
+    }
+
+    const entityFilter = readTextFilter(entityParam);
+    if (entityFilter.error) {
+        sendError(res, req, { statusCode: 400, message: entityFilter.error });
+        return null;
+    }
+
+    const readDateFilter = (paramName) => {
+        const raw = query[paramName];
+        if (raw === undefined || raw === null || raw === "") {
+            return { value: undefined };
+        }
+        const value = String(raw);
+        if (!INTERACTION_DATE_REGEX.test(value)) {
+            return {
+                error: `El parámetro '${paramName}' debe tener el formato YYYY-MM-DD`,
+            };
+        }
+        return { value };
+    };
+
+    const dateFromFilter = readDateFilter("dateFrom");
+    if (dateFromFilter.error) {
+        sendError(res, req, { statusCode: 400, message: dateFromFilter.error });
+        return null;
+    }
+
+    const dateToFilter = readDateFilter("dateTo");
+    if (dateToFilter.error) {
+        sendError(res, req, { statusCode: 400, message: dateToFilter.error });
+        return null;
+    }
+
+    if (
+        dateFromFilter.value &&
+        dateToFilter.value &&
+        dateFromFilter.value > dateToFilter.value
+    ) {
+        sendError(res, req, {
+            statusCode: 400,
+            message: "La fecha 'desde' no puede ser posterior a la fecha 'hasta'",
+        });
+        return null;
+    }
+
+    let page = Number.parseInt(query.page, 10);
+    if (!Number.isInteger(page) || page < 1) {
+        page = 1;
+    }
+
+    let pageSize = Number.parseInt(query.pageSize, 10);
+    if (!INTERACTION_PAGE_SIZES.includes(pageSize)) {
+        pageSize = 15;
+    }
+
+    return {
+        username: usernameFilter.value,
+        entityValue: entityFilter.value,
+        dateFrom: dateFromFilter.value,
+        dateTo: dateToFilter.value,
+        page,
+        pageSize,
+    };
+}
+
+/*
  * Público.
  *
- * Recupera todas las interacciones entre usuarios y productos.
+ * Recupera las interacciones entre usuarios y productos, paginadas y con
+ * filtros opcionales por usuario, producto y rango de fechas
+ * (últimaInteracción).
  *
  * Devuelve los datos de user_product_interaction,
  * junto con el username del usuario y el nombre del producto.
@@ -2281,6 +2383,43 @@ app.delete("/api/v1/cart", authenticateToken, async (req, res, next) => {
  */
 app.get("/api/v1/products/interaction/all", async (req, res, next) => {
     try {
+        const filters = parseInteractionListQuery(req, res, {
+            entityParam: "productName",
+        });
+        if (!filters) {
+            return;
+        }
+
+        const conditions = [];
+        const params = [];
+
+        if (filters.username) {
+            params.push(`%${filters.username}%`);
+            conditions.push(`u.username ILIKE $${params.length}`);
+        }
+        if (filters.entityValue) {
+            params.push(`%${filters.entityValue}%`);
+            conditions.push(`p.name ILIKE $${params.length}`);
+        }
+        if (filters.dateFrom) {
+            params.push(filters.dateFrom);
+            conditions.push(`upi.last_interaction_at >= $${params.length}::date`);
+        }
+        if (filters.dateTo) {
+            params.push(filters.dateTo);
+            conditions.push(
+                `upi.last_interaction_at < ($${params.length}::date + INTERVAL '1 day')`,
+            );
+        }
+
+        const whereClause =
+            conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+        params.push(filters.pageSize);
+        const limitParamIndex = params.length;
+        params.push((filters.page - 1) * filters.pageSize);
+        const offsetParamIndex = params.length;
+
         const result = await pool.query(
             `
                 SELECT
@@ -2290,23 +2429,41 @@ app.get("/api/v1/products/interaction/all", async (req, res, next) => {
                     p.name AS "productName",
                     upi.rating,
                     upi.interaction_count AS "interactionCount",
-                    upi.last_interaction_at AS "lastInteractionAt"
+                    upi.last_interaction_at AS "lastInteractionAt",
+                    COUNT(*) OVER() AS "totalItems"
                 FROM public.user_product_interaction upi
                 INNER JOIN public."user" u
                     ON u.id = upi.user_id
                 INNER JOIN public.product p
                     ON p.id = upi.product_id
+                ${whereClause}
                 ORDER BY
                     upi.last_interaction_at DESC,
                     upi.user_id ASC,
-                    upi.product_id ASC;
+                    upi.product_id ASC
+                LIMIT $${limitParamIndex}
+                OFFSET $${offsetParamIndex};
             `,
+            params,
+        );
+
+        const totalItems =
+            result.rows.length > 0 ? Number(result.rows[0].totalItems) : 0;
+        const totalPages = Math.max(1, Math.ceil(totalItems / filters.pageSize));
+        const interactions = result.rows.map(
+            ({ totalItems: _totalItems, ...row }) => row,
         );
 
         return sendSuccess(res, req, {
             message: "Interacciones con productos recuperadas exitosamente",
             data: {
-                interactions: result.rows,
+                interactions,
+                pagination: {
+                    page: filters.page,
+                    pageSize: filters.pageSize,
+                    totalItems,
+                    totalPages,
+                },
             },
         });
     } catch (error) {
@@ -2316,7 +2473,9 @@ app.get("/api/v1/products/interaction/all", async (req, res, next) => {
 /*
  * Público.
  *
- * Recupera todas las interacciones entre usuarios y promociones.
+ * Recupera las interacciones entre usuarios y promociones, paginadas y con
+ * filtros opcionales por usuario, promoción y rango de fechas
+ * (últimaInteracción).
  *
  * Devuelve los datos de user_promotion_interaction,
  * junto con el username del usuario y el título de la promoción.
@@ -2325,6 +2484,43 @@ app.get("/api/v1/products/interaction/all", async (req, res, next) => {
  */
 app.get("/api/v1/promotions/interaction/all", async (req, res, next) => {
     try {
+        const filters = parseInteractionListQuery(req, res, {
+            entityParam: "promotionTitle",
+        });
+        if (!filters) {
+            return;
+        }
+
+        const conditions = [];
+        const params = [];
+
+        if (filters.username) {
+            params.push(`%${filters.username}%`);
+            conditions.push(`u.username ILIKE $${params.length}`);
+        }
+        if (filters.entityValue) {
+            params.push(`%${filters.entityValue}%`);
+            conditions.push(`p.title ILIKE $${params.length}`);
+        }
+        if (filters.dateFrom) {
+            params.push(filters.dateFrom);
+            conditions.push(`upi.last_interaction_at >= $${params.length}::date`);
+        }
+        if (filters.dateTo) {
+            params.push(filters.dateTo);
+            conditions.push(
+                `upi.last_interaction_at < ($${params.length}::date + INTERVAL '1 day')`,
+            );
+        }
+
+        const whereClause =
+            conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+        params.push(filters.pageSize);
+        const limitParamIndex = params.length;
+        params.push((filters.page - 1) * filters.pageSize);
+        const offsetParamIndex = params.length;
+
         const result = await pool.query(
             `
                 SELECT
@@ -2334,23 +2530,41 @@ app.get("/api/v1/promotions/interaction/all", async (req, res, next) => {
                     p.title AS "promotionTitle",
                     upi.rating,
                     upi.interaction_count AS "interactionCount",
-                    upi.last_interaction_at AS "lastInteractionAt"
+                    upi.last_interaction_at AS "lastInteractionAt",
+                    COUNT(*) OVER() AS "totalItems"
                 FROM public.user_promotion_interaction upi
                 INNER JOIN public."user" u
                     ON u.id = upi.user_id
                 INNER JOIN public.promotion p
                     ON p.id = upi.promotion_id
+                ${whereClause}
                 ORDER BY
                     upi.last_interaction_at DESC,
                     upi.user_id ASC,
-                    upi.promotion_id ASC;
+                    upi.promotion_id ASC
+                LIMIT $${limitParamIndex}
+                OFFSET $${offsetParamIndex};
             `,
+            params,
+        );
+
+        const totalItems =
+            result.rows.length > 0 ? Number(result.rows[0].totalItems) : 0;
+        const totalPages = Math.max(1, Math.ceil(totalItems / filters.pageSize));
+        const interactions = result.rows.map(
+            ({ totalItems: _totalItems, ...row }) => row,
         );
 
         return sendSuccess(res, req, {
             message: "Interacciones con promociones recuperadas exitosamente",
             data: {
-                interactions: result.rows,
+                interactions,
+                pagination: {
+                    page: filters.page,
+                    pageSize: filters.pageSize,
+                    totalItems,
+                    totalPages,
+                },
             },
         });
     } catch (error) {
