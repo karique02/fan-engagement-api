@@ -40,6 +40,10 @@ an email-verification flow: a raw random token is emailed, only its SHA-256 hash
 `email_verification` (`createEmailVerificationToken`/`createOrReplaceEmailVerification`, server.js:59-105).
 `GET /api/v1/auth/verify-email` renders an HTML landing page (`renderEmailVerificationPage`,
 server.js:166), not JSON — it's meant to be opened directly from the emailed link.
+`POST /api/v1/auth/login` also returns `data.user.userType` (the `public."user".user_type` column,
+`1` or `2`) — used by `fan-engagement-web` to gate its Dashboard tab/route to `userType === 2`. The
+signed JWT itself is unchanged (`sub`/`username`/`email` only); `userType` travels only in the login
+response body.
 
 **Response envelope**: every route responds via `sendSuccess(res, req, { statusCode, message, data })`
 or `sendError(res, req, { statusCode, message, data })` (server.js:230/248). Response shape is always
