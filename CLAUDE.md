@@ -62,7 +62,17 @@ handling/formatting errors inline, so they reach the shared 500 handler.
 - `products`, `promotions` — read-only catalog (authenticated)
 - `products/interaction`, `promotions/interaction` — fan engagement tracking (authenticated); this is
   the core product signal the recommender trains on. `products/interaction/all` and
-  `promotions/interaction/all` are the raw-dump equivalents and are intentionally **not** authenticated.
+  `promotions/interaction/all` are the paginated/filterable list equivalents and are intentionally
+  **not** authenticated. Both accept the same query params, validated by the shared
+  `parseInteractionListQuery()` helper (server.js, right above these two routes): `username` and
+  `productName` (products) / `promotionTitle` (promotions) — free-text `ILIKE '%value%'`, restricted
+  to `/^[\p{L}0-9 ._-]{0,100}$/u` (letters incl. accented/ñ, digits, space, `.`/`_`/`-`) — `dateFrom`/
+  `dateTo` (`YYYY-MM-DD`, filtering `last_interaction_at` inclusive on both ends), and `page`/
+  `pageSize` (`pageSize` only accepts `15`/`30`/`45`, defaulting to `15` for any other value; `page`
+  defaults to `1`). Any invalid text filter, invalid date format, or `dateFrom > dateTo` responds
+  `400` via `sendError`. The response's `data` now includes `pagination: { page, pageSize,
+  totalItems, totalPages }` alongside `interactions`, computed from a `COUNT(*) OVER()` window
+  function in the same paginated query (no second round-trip).
 - `cart/*` — shopping cart CRUD: `GET cart`, `POST cart/products`, `POST cart/promotions`,
   `PATCH cart/items/:cartItemId`, `DELETE cart/items/:cartItemId`, `DELETE cart` (all authenticated)
 - `recommendations/train` — manually triggers collaborative filtering; **not authenticated**; no-ops
