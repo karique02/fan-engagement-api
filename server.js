@@ -2383,6 +2383,263 @@ app.post("/api/v1/recommendations/train", async (req, res, next) => {
 /*
  * Protegido.
  *
+ * Devuelve las métricas agregadas de fan engagement usadas por el
+ * dashboard: KPIs generales, actividad reciente (30 días), rankings
+ * top-5 de productos y promociones, salud del recomendador de
+ * filtrado colaborativo y el embudo interacción -> carrito.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.get("/api/v1/dashboard/engagement", authenticateToken, async (req, res, next) => {
+    try {
+        const [
+            registeredFansResult,
+            activeFansResult,
+            productInteractionTotalsResult,
+            promotionInteractionTotalsResult,
+            activityResult,
+            topProductsResult,
+            topPromotionsResult,
+            recommenderResult,
+            funnelResult,
+        ] = await Promise.all([
+            pool.query(`SELECT COUNT(*) AS count FROM public."user";`),
+            pool.query(`
+                SELECT COUNT(DISTINCT user_id) AS count
+                FROM (
+                    SELECT user_id FROM public.user_product_interaction
+                    UNION
+                    SELECT user_id FROM public.user_promotion_interaction
+                ) active_fan;
+            `),
+            pool.query(`
+                SELECT
+                    COALESCE(SUM(interaction_count), 0) AS total_interactions,
+                    COALESCE(AVG(rating), 0) AS average_rating
+                FROM public.user_product_interaction;
+            `),
+            pool.query(`
+                SELECT
+                    COALESCE(SUM(interaction_count), 0) AS total_interactions,
+                    COALESCE(AVG(rating), 0) AS average_rating
+                FROM public.user_promotion_interaction;
+            `),
+            pool.query(`
+                WITH day_series AS (
+                    SELECT generate_series(
+                        CURRENT_DATE - INTERVAL '29 days',
+                        CURRENT_DATE,
+                        '1 day'
+                    )::date AS day
+                ),
+                daily_activity AS (
+                    SELECT
+                        date_trunc('day', last_interaction_at)::date AS day,
+                        user_id,
+                        interaction_count
+                    FROM public.user_product_interaction
+                    UNION ALL
+                    SELECT
+                        date_trunc('day', last_interaction_at)::date AS day,
+                        user_id,
+                        interaction_count
+                    FROM public.user_promotion_interaction
+                )
+                SELECT
+                    ds.day,
+                    COALESCE(COUNT(DISTINCT da.user_id), 0) AS active_fans,
+                    COALESCE(SUM(da.interaction_count), 0) AS interactions
+                FROM day_series ds
+                LEFT JOIN daily_activity da
+                    ON da.day = ds.day
+                GROUP BY ds.day
+                ORDER BY ds.day ASC;
+            `),
+            pool.query(`
+                SELECT
+                    p.id,
+                    p.name,
+                    pc.name AS category_name,
+                    COUNT(DISTINCT upi.user_id) AS unique_fans,
+                    COALESCE(SUM(upi.interaction_count), 0) AS total_interactions,
+                    COALESCE(AVG(upi.rating), 0) AS average_rating
+                FROM public.user_product_interaction upi
+                INNER JOIN public.product p
+                    ON p.id = upi.product_id
+                INNER JOIN public.product_category pc
+                    ON pc.id = p.product_category_id
+                GROUP BY p.id, p.name, pc.name
+                ORDER BY total_interactions DESC, average_rating DESC
+                LIMIT 5;
+            `),
+            pool.query(`
+                SELECT
+                    pr.id,
+                    pr.title,
+                    prc.name AS category_name,
+                    COUNT(DISTINCT upi.user_id) AS unique_fans,
+                    COALESCE(SUM(upi.interaction_count), 0) AS total_interactions,
+                    COALESCE(AVG(upi.rating), 0) AS average_rating
+                FROM public.user_promotion_interaction upi
+                INNER JOIN public.promotion pr
+                    ON pr.id = upi.promotion_id
+                INNER JOIN public.promotion_category prc
+                    ON prc.id = pr.promotion_category_id
+                GROUP BY pr.id, pr.title, prc.name
+                ORDER BY total_interactions DESC, average_rating DESC
+                LIMIT 5;
+            `),
+            pool.query(`
+                SELECT
+                    (SELECT COUNT(DISTINCT user_id) FROM public.user_product_recommendation) AS fans_with_product_recommendations,
+                    (SELECT COUNT(DISTINCT user_id) FROM public.user_promotion_recommendation) AS fans_with_promotion_recommendations,
+                    (SELECT COUNT(*) FROM public.user_product_recommendation) AS product_recommendation_count,
+                    (SELECT COUNT(*) FROM public.user_promotion_recommendation) AS promotion_recommendation_count,
+                    (SELECT MAX(generated_at) FROM public.user_product_recommendation) AS product_last_trained_at,
+                    (SELECT MAX(generated_at) FROM public.user_promotion_recommendation) AS promotion_last_trained_at;
+            `),
+            pool.query(`
+                SELECT
+                    (
+                        SELECT COUNT(DISTINCT user_id) FROM (
+                            SELECT user_id FROM public.user_product_interaction
+                            UNION
+                            SELECT user_id FROM public.user_promotion_interaction
+                        ) active_fan
+                    ) AS fans_with_interaction,
+                    (
+                        SELECT COUNT(DISTINCT sc.user_id)
+                        FROM public.shopping_cart sc
+                        INNER JOIN public.shopping_cart_item sci
+                            ON sci.shopping_cart_id = sc.id
+                    ) AS fans_with_cart,
+                    COALESCE(
+                        (SELECT SUM(sci.quantity) FROM public.shopping_cart_item sci),
+                        0
+                    ) AS cart_items;
+            `),
+        ]);
+
+        const registeredFans = Number(registeredFansResult.rows[0].count);
+        const activeFans = Number(activeFansResult.rows[0].count);
+
+        const productInteractions = Number(
+            productInteractionTotalsResult.rows[0].total_interactions,
+        );
+        const promotionInteractions = Number(
+            promotionInteractionTotalsResult.rows[0].total_interactions,
+        );
+        const totalInteractions = productInteractions + promotionInteractions;
+
+        const activationRate = registeredFans > 0
+            ? activeFans / registeredFans
+            : 0;
+        const averageInteractionsPerActiveFan = activeFans > 0
+            ? totalInteractions / activeFans
+            : 0;
+
+        const activityDays = activityResult.rows.map((row) => ({
+            date: row.day.toISOString().slice(0, 10),
+            activeFans: Number(row.active_fans),
+            interactions: Number(row.interactions),
+        }));
+
+        const topProducts = topProductsResult.rows.map((row) => ({
+            id: Number(row.id),
+            name: row.name,
+            categoryName: row.category_name,
+            uniqueFans: Number(row.unique_fans),
+            totalInteractions: Number(row.total_interactions),
+            averageRating: Number(row.average_rating),
+        }));
+
+        const topPromotions = topPromotionsResult.rows.map((row) => ({
+            id: Number(row.id),
+            title: row.title,
+            categoryName: row.category_name,
+            uniqueFans: Number(row.unique_fans),
+            totalInteractions: Number(row.total_interactions),
+            averageRating: Number(row.average_rating),
+        }));
+
+        const recommenderRow = recommenderResult.rows[0];
+        const fansWithProductRecommendations = Number(
+            recommenderRow.fans_with_product_recommendations,
+        );
+        const coverageRate = activeFans > 0
+            ? fansWithProductRecommendations / activeFans
+            : 0;
+        const lastTrainedAt = [
+            recommenderRow.product_last_trained_at,
+            recommenderRow.promotion_last_trained_at,
+        ]
+            .filter((value) => value !== null)
+            .sort((a, b) => new Date(b) - new Date(a))[0] ?? null;
+
+        const funnelRow = funnelResult.rows[0];
+        const fansWithInteraction = Number(funnelRow.fans_with_interaction);
+        const fansWithCart = Number(funnelRow.fans_with_cart);
+        const interactionToCartRate = fansWithInteraction > 0
+            ? fansWithCart / fansWithInteraction
+            : 0;
+
+        return sendSuccess(res, req, {
+            message: "Métricas de fan engagement recuperadas exitosamente",
+            data: {
+                generatedAt: new Date().toISOString(),
+                kpis: {
+                    registeredFans,
+                    activeFans,
+                    activationRate,
+                    productInteractions,
+                    promotionInteractions,
+                    totalInteractions,
+                    averageInteractionsPerActiveFan,
+                    averageProductRating: Number(
+                        productInteractionTotalsResult.rows[0].average_rating,
+                    ),
+                    averagePromotionRating: Number(
+                        promotionInteractionTotalsResult.rows[0].average_rating,
+                    ),
+                },
+                activity: {
+                    days: activityDays,
+                },
+                topProducts,
+                topPromotions,
+                recommender: {
+                    fansWithProductRecommendations,
+                    fansWithPromotionRecommendations: Number(
+                        recommenderRow.fans_with_promotion_recommendations,
+                    ),
+                    productRecommendationCount: Number(
+                        recommenderRow.product_recommendation_count,
+                    ),
+                    promotionRecommendationCount: Number(
+                        recommenderRow.promotion_recommendation_count,
+                    ),
+                    coverageRate,
+                    lastTrainedAt,
+                },
+                funnel: {
+                    fansWithInteraction,
+                    fansWithCart,
+                    cartItems: Number(funnelRow.cart_items),
+                    interactionToCartRate,
+                },
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+
+
+/*
+ * Protegido.
+ *
  * Devuelve las recomendaciones de productos del usuario autenticado.
  *
  * Header:
