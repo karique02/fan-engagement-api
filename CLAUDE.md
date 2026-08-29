@@ -43,7 +43,11 @@ server.js:166), not JSON — it's meant to be opened directly from the emailed l
 `POST /api/v1/auth/login` also returns `data.user.userType` (the `public."user".user_type` column,
 `1` or `2`) — used by `fan-engagement-web` to gate its Dashboard tab/route to `userType === 2`. The
 signed JWT itself is unchanged (`sub`/`username`/`email` only); `userType` travels only in the login
-response body.
+response body. The login body also accepts an optional `client` field — when `client === "web"` and
+the matched user's `user_type !== 2`, login is rejected with `403` and `data.reason: "not_admin"`
+(no `accessToken`/`user` in the response), restricting `fan-engagement-web` to admin accounts only.
+This field is **web-exclusive**: `fan-engagement-android` must never send it, since fans there are
+typically `userType 1` and would otherwise be locked out of the app.
 
 **Response envelope**: every route responds via `sendSuccess(res, req, { statusCode, message, data })`
 or `sendError(res, req, { statusCode, message, data })` (server.js:230/248). Response shape is always
