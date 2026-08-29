@@ -7,6 +7,8 @@ const argon2 = require("argon2");
 const jwt = require("jsonwebtoken");
 const crypto = require("node:crypto");
 const nodemailer = require("nodemailer");
+const { initializeApp, cert } = require("firebase-admin/app");
+const { getMessaging } = require("firebase-admin/messaging");
 
 const app = express();
 
@@ -39,6 +41,14 @@ if (!process.env.SMTP_PASS) {
 if (!process.env.MAIL_FROM) {
     throw new Error("MAIL_FROM is required");
 }
+
+if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is required");
+}
+
+initializeApp({
+    credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)),
+});
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -1166,6 +1176,422 @@ app.delete("/api/v1/users/me/fcm-token", authenticateToken, async (req, res, nex
                         cellphone: user.cellphone,
                     },
                 },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.get("/api/v1/users", authenticateToken, async (req, res, next) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                id::integer AS id,
+                username,
+                email,
+                (fcm_token IS NOT NULL) AS "hasFcmToken"
+            FROM public."user"
+            ORDER BY username;
+        `);
+
+        return sendSuccess(res, req, {
+            message: "Usuarios recuperados exitosamente",
+            data: {
+                users: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+app.get("/api/v1/images", authenticateToken, async (req, res, next) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                id,
+                url,
+                source_type AS "sourceType",
+                source_id AS "sourceId"
+            FROM public.image
+            ORDER BY id;
+        `);
+
+        return sendSuccess(res, req, {
+            message: "Imagenes recuperadas exitosamente",
+            data: {
+                images: result.rows,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+app.post(
+    "/api/v1/notifications/send",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const { title, body, imageUrl, target, userIds } = req.body ?? {};
+
+            if (
+                typeof title !== "string" ||
+                title.trim().length === 0 ||
+                title.length > 65
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El título es obligatorio y debe tener como máximo 65 caracteres",
+                });
+            }
+
+            if (
+                typeof body !== "string" ||
+                body.trim().length === 0 ||
+                body.length > 240
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El cuerpo es obligatorio y debe tener como máximo 240 caracteres",
+                });
+            }
+
+            if (target !== "all" && target !== "users") {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El destino debe ser 'all' o 'users'",
+                });
+            }
+
+            if (
+                target === "users" &&
+                (!Array.isArray(userIds) ||
+                    userIds.length === 0 ||
+                    !userIds.every((id) => Number.isInteger(id)))
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "Para el destino 'users' se requiere una lista no vacía de userIds",
+                });
+            }
+
+            const normalizedImageUrl =
+                typeof imageUrl === "string" && imageUrl.length > 0
+                    ? imageUrl
+                    : null;
+
+            let recipientsResult;
+            if (target === "all") {
+                recipientsResult = await pool.query(`
+                    SELECT id, username, fcm_token AS "fcmToken"
+                    FROM public."user"
+                    WHERE fcm_token IS NOT NULL;
+                `);
+            } else {
+                recipientsResult = await pool.query(
+                    `
+                    SELECT id, username, fcm_token AS "fcmToken"
+                    FROM public."user"
+                    WHERE id = ANY($1);
+                    `,
+                    [userIds],
+                );
+
+                if (recipientsResult.rows.length !== userIds.length) {
+                    return sendError(res, req, {
+                        statusCode: 400,
+                        message: "Uno o más userIds no existen",
+                    });
+                }
+            }
+
+            const recipients = recipientsResult.rows.map((recipient) => ({
+                userId: recipient.id,
+                username: recipient.username,
+                fcmToken: recipient.fcmToken,
+                status: recipient.fcmToken ? null : "no_token",
+            }));
+
+            const tokensToSend = recipients.filter(
+                (recipient) => recipient.fcmToken,
+            );
+
+            const invalidTokenErrorCodes = new Set([
+                "messaging/registration-token-not-registered",
+                "messaging/invalid-registration-token",
+            ]);
+            const tokensToClear = [];
+
+            for (let i = 0; i < tokensToSend.length; i += 500) {
+                const batch = tokensToSend.slice(i, i + 500);
+
+                const response = await getMessaging().sendEachForMulticast({
+                    tokens: batch.map((recipient) => recipient.fcmToken),
+                    notification: {
+                        title,
+                        body,
+                        ...(normalizedImageUrl
+                            ? { imageUrl: normalizedImageUrl }
+                            : {}),
+                    },
+                });
+
+                response.responses.forEach((sendResponse, index) => {
+                    const recipient = batch[index];
+                    if (sendResponse.success) {
+                        recipient.status = "delivered";
+                        return;
+                    }
+
+                    recipient.status = "failed";
+                    if (
+                        invalidTokenErrorCodes.has(sendResponse.error?.code)
+                    ) {
+                        tokensToClear.push(recipient.userId);
+                    }
+                });
+            }
+
+            if (tokensToClear.length > 0) {
+                await pool.query(
+                    `UPDATE public."user" SET fcm_token = NULL WHERE id = ANY($1);`,
+                    [tokensToClear],
+                );
+            }
+
+            const deliveredCount = recipients.filter(
+                (recipient) => recipient.status === "delivered",
+            ).length;
+            const failedCount = recipients.filter(
+                (recipient) => recipient.status === "failed",
+            ).length;
+            const noTokenCount = recipients.filter(
+                (recipient) => recipient.status === "no_token",
+            ).length;
+
+            const logResult = await pool.query(
+                `
+                INSERT INTO public.notification_log
+                    (title, body, image_url, target_type, sent_by_user_id, delivered_count, failed_count, no_token_count)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id;
+                `,
+                [
+                    title,
+                    body,
+                    normalizedImageUrl,
+                    target,
+                    req.authenticatedUser.sub,
+                    deliveredCount,
+                    failedCount,
+                    noTokenCount,
+                ],
+            );
+            const notificationLogId = logResult.rows[0].id;
+
+            if (recipients.length > 0) {
+                const values = [];
+                const params = [];
+                recipients.forEach((recipient, index) => {
+                    const base = index * 3;
+                    values.push(
+                        `($${base + 1}, $${base + 2}, $${base + 3})`,
+                    );
+                    params.push(
+                        notificationLogId,
+                        recipient.userId,
+                        recipient.status,
+                    );
+                });
+
+                await pool.query(
+                    `
+                    INSERT INTO public.notification_log_recipient
+                        (notification_log_id, user_id, status)
+                    VALUES ${values.join(", ")};
+                    `,
+                    params,
+                );
+            }
+
+            return sendSuccess(res, req, {
+                message: "Notificación procesada exitosamente",
+                data: {
+                    notificationLogId,
+                    delivered: deliveredCount,
+                    failed: failedCount,
+                    noToken: noTokenCount,
+                    recipients: recipients.map((recipient) => ({
+                        userId: recipient.userId,
+                        username: recipient.username,
+                        status: recipient.status,
+                    })),
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.get(
+    "/api/v1/notifications/log",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const filters = parseInteractionListQuery(req, res, {
+                entityParam: "title",
+            });
+            if (!filters) {
+                return;
+            }
+
+            const conditions = [];
+            const params = [];
+
+            if (filters.entityValue) {
+                params.push(`%${filters.entityValue}%`);
+                conditions.push(`nl.title ILIKE $${params.length}`);
+            }
+            if (filters.username) {
+                params.push(`%${filters.username}%`);
+                conditions.push(`
+                    EXISTS (
+                        SELECT 1
+                        FROM public.notification_log_recipient nlr
+                        INNER JOIN public."user" ru ON ru.id = nlr.user_id
+                        WHERE nlr.notification_log_id = nl.id
+                            AND ru.username ILIKE $${params.length}
+                    )
+                `);
+            }
+            if (filters.dateFrom) {
+                params.push(filters.dateFrom);
+                conditions.push(`nl.created_at >= $${params.length}::date`);
+            }
+            if (filters.dateTo) {
+                params.push(filters.dateTo);
+                conditions.push(
+                    `nl.created_at < ($${params.length}::date + INTERVAL '1 day')`,
+                );
+            }
+
+            const whereClause =
+                conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+            params.push(filters.pageSize);
+            const limitParamIndex = params.length;
+            params.push((filters.page - 1) * filters.pageSize);
+            const offsetParamIndex = params.length;
+
+            const result = await pool.query(
+                `
+                SELECT
+                    nl.id,
+                    nl.title,
+                    nl.body,
+                    nl.image_url AS "imageUrl",
+                    nl.target_type AS "targetType",
+                    nl.delivered_count AS "deliveredCount",
+                    nl.failed_count AS "failedCount",
+                    nl.no_token_count AS "noTokenCount",
+                    sender.username AS "sentByUsername",
+                    nl.created_at AS "createdAt",
+                    COUNT(*) OVER() AS "totalItems"
+                FROM public.notification_log nl
+                INNER JOIN public."user" sender
+                    ON sender.id = nl.sent_by_user_id
+                ${whereClause}
+                ORDER BY nl.created_at DESC
+                LIMIT $${limitParamIndex}
+                OFFSET $${offsetParamIndex};
+                `,
+                params,
+            );
+
+            const totalItems =
+                result.rows.length > 0 ? Number(result.rows[0].totalItems) : 0;
+            const totalPages = Math.max(1, Math.ceil(totalItems / filters.pageSize));
+            const logs = result.rows.map(({ totalItems: _totalItems, ...row }) => row);
+
+            const logIds = logs.map((log) => log.id);
+            let recipientsByLogId = new Map();
+            if (logIds.length > 0) {
+                const recipientsResult = await pool.query(
+                    `
+                    SELECT
+                        nlr.notification_log_id AS "logId",
+                        u.id AS "userId",
+                        u.username,
+                        nlr.status
+                    FROM public.notification_log_recipient nlr
+                    INNER JOIN public."user" u ON u.id = nlr.user_id
+                    WHERE nlr.notification_log_id = ANY($1)
+                    ORDER BY u.username;
+                    `,
+                    [logIds],
+                );
+                recipientsByLogId = recipientsResult.rows.reduce((map, row) => {
+                    const list = map.get(row.logId) ?? [];
+                    list.push({
+                        userId: row.userId,
+                        username: row.username,
+                        status: row.status,
+                    });
+                    map.set(row.logId, list);
+                    return map;
+                }, new Map());
+            }
+
+            return sendSuccess(res, req, {
+                message: "Historial de notificaciones recuperado exitosamente",
+                data: {
+                    logs: logs.map((log) => ({
+                        ...log,
+                        recipients: recipientsByLogId.get(log.id) ?? [],
+                    })),
+                    pagination: {
+                        page: filters.page,
+                        pageSize: filters.pageSize,
+                        totalItems,
+                        totalPages,
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.delete(
+    "/api/v1/notifications/log/:id",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const id = Number.parseInt(req.params.id, 10);
+            if (!Number.isInteger(id)) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El id del registro debe ser un número entero",
+                });
+            }
+
+            const result = await pool.query(
+                `DELETE FROM public.notification_log WHERE id = $1 RETURNING id;`,
+                [id],
+            );
+
+            if (result.rowCount === 0) {
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message: "No se encontró el registro de notificación",
+                });
+            }
+
+            return sendSuccess(res, req, {
+                message: "Registro de notificación eliminado exitosamente",
+                data: { id },
             });
         } catch (error) {
             next(error);
