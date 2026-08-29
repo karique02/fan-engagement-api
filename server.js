@@ -833,6 +833,15 @@ app.post("/api/v1/auth/login", async (req, res, next) => {
             });
         }
 
+        if (req.body?.client === "web" && Number(user.user_type) !== 2) {
+            return sendError(res, req, {
+                statusCode: 403,
+                message:
+                    "Tu usuario no tiene permisos de administrador para acceder a esta plataforma. Contacta a un administrador si crees que esto es un error.",
+                data: { reason: "not_admin" },
+            });
+        }
+
         const token = jwt.sign(
             {
                 sub: user.id,
