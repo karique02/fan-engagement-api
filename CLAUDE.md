@@ -11,9 +11,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Required environment (`.env`)
 
 The app throws at startup (before listening) if any of these are missing:
-`DATABASE_URL`, `JWT_SECRET`, `API_PUBLIC_URL`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`.
-`PORT` defaults to `3000`. `.env.example` only lists `PORT`/`DATABASE_URL`/`JWT_SECRET` — it's stale,
-copy the full list above when setting up a local `.env`.
+`DATABASE_URL`, `JWT_SECRET`, `API_PUBLIC_URL`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`,
+`FIREBASE_SERVICE_ACCOUNT_JSON`. `PORT` defaults to `3000`. `.env.example` only lists
+`PORT`/`DATABASE_URL`/`JWT_SECRET`/`FIREBASE_SERVICE_ACCOUNT_JSON` — it's stale on the rest, copy the
+full list above when setting up a local `.env`.
+
+`FIREBASE_SERVICE_ACCOUNT_JSON` holds the full Firebase service account key (Firebase console →
+Project Settings → Service Accounts → Generate new private key) as a single-line JSON string, pasted
+exactly as downloaded — do not reformat it or the private key's escaped `\n` will break `JSON.parse`
+at boot. It must belong to the same Firebase project as `fan-engagement-android`'s
+`google-services.json`. The installed `firebase-admin` major version (14.x) uses the modular API —
+`initializeApp`/`cert` from `firebase-admin/app` and `getMessaging` from `firebase-admin/messaging`
+(not `admin.credential.cert(...)`/`admin.messaging()`, which don't exist on this version's default
+export). `initializeApp({ credential: cert(...) })` runs near the top of `server.js`, backing the
+`notifications/*` routes below.
 
 `NODE_ENV=production` switches the `pg` Pool to `ssl: { rejectUnauthorized: false }`; otherwise SSL
 is disabled. SMTP is Gmail specifically (`nodemailer.createTransport({ service: "gmail", ... })`),
@@ -87,6 +98,36 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   by `last_interaction_at`, not a real event history — see the schema note below), top-5 product/
   promotion rankings, recommender coverage, and the interaction→cart funnel, for the web's
   `/dashboard` page
+- `users` — authenticated; lists all users (`id`, `username`, `email`, `hasFcmToken`), used by the
+  web's Notifications tab to populate its recipient autocomplete. `id` is explicitly cast
+  (`id::integer`) in the query — `pg` returns `bigint` columns as strings by default, and this `id`
+  round-trips back into `POST /notifications/send`'s `userIds` body, which validates with
+  `Number.isInteger`; without the cast every send to specific users 400s
+- `images` — authenticated; lists `public.image` rows (`id`, `url`, `sourceType`, `sourceId`), used
+  by the web's Notifications tab image picker. One-time seeded with a manual `INSERT ... SELECT
+  DISTINCT ... ON CONFLICT (url) DO NOTHING` per source table, copying the distinct URLs already in
+  `product.image`/`promotion.image` (no seed script kept in the repo — run it directly against the
+  target database if `image` ever needs re-seeding) — there is no upload flow, the picker only offers
+  what's already seeded
+- `notifications/send` — authenticated; sends a push notification via Firebase Admin
+  (`getMessaging().sendEachForMulticast`, batched to ≤500 tokens) to either every user with a
+  non-null `fcm_token` (`target: "all"`) or an explicit `userIds` list (`target: "users"`). A token
+  FCM reports as unregistered/invalid gets cleared (`fcm_token = NULL`) automatically. Every call
+  writes one `notification_log` row (aggregate counts) plus one `notification_log_recipient` row per
+  intended recipient (`status`: `delivered`/`failed`/`no_token`) — the response echoes those counts
+  and a per-recipient breakdown
+- `notifications/log` — authenticated; paginated/filterable (reuses `parseInteractionListQuery()` with
+  `entityParam: "title"`, so it accepts the same `page`/`pageSize`/`dateFrom`/`dateTo` contract as the
+  interaction list endpoints, plus `title` — `ILIKE` on `notification_log.title` — and `username` —
+  `ILIKE` on any recipient's username via `EXISTS` against `notification_log_recipient`, filtering to
+  only the sends where that user appears, whether via `target: "all"` or an explicit pick). Each
+  returned log row includes a `recipients: { userId, username, status }[]` array (a second query keyed
+  by the page's log ids, merged in JS — kept separate from the paginated `COUNT(*) OVER()` query so
+  joining recipients doesn't multiply/break pagination) — the web uses this both to decide what to
+  show in its "Destino" column (a lone recipient's username instead of "Usuarios específicos" when
+  `target: "users"` had exactly one) and to render the full per-recipient breakdown in its detail modal
+- `DELETE notifications/log/:id` — authenticated; deletes one `notification_log` row (and its
+  `notification_log_recipient` rows via `ON DELETE CASCADE`); `404` if the id doesn't exist
 
 **Recommendations engine**: `trainCollaborativeFiltering()` (server.js:452) runs product- and
 promotion-level collaborative filtering in-process against interaction/cart data
