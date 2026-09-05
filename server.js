@@ -325,9 +325,32 @@ async function trainProductRecommendations(client) {
         `,
     );
 
+    const purchaseSignalWeight = await getIntegerParameter(
+        "purchase_signal_weight",
+        2,
+    );
+
     await client.query(
         `
-            WITH product_similarity AS (
+            WITH purchased_product AS (
+                SELECT DISTINCT p.user_id, pi.product_id
+                FROM public.purchase p
+                INNER JOIN public.purchase_item pi ON pi.purchase_id = p.id
+                WHERE p.status <> 'cancelled'
+                  AND pi.product_id IS NOT NULL
+            ),
+            user_product_signal AS (
+                SELECT
+                    COALESCE(upi.user_id, pp.user_id)       AS user_id,
+                    COALESCE(upi.product_id, pp.product_id) AS product_id,
+                    COALESCE(upi.rating, 0)
+                        + CASE WHEN pp.user_id IS NOT NULL THEN $1::numeric ELSE 0 END AS rating
+                FROM public.user_product_interaction upi
+                FULL OUTER JOIN purchased_product pp
+                    ON pp.user_id = upi.user_id
+                   AND pp.product_id = upi.product_id
+            ),
+            product_similarity AS (
                 SELECT
                     upi_a.product_id AS source_product_id,
                     upi_b.product_id AS recommended_product_id,
@@ -341,8 +364,8 @@ async function trainProductRecommendations(client) {
                             0
                         )
                     ) AS similarity_score
-                FROM public.user_product_interaction upi_a
-                INNER JOIN public.user_product_interaction upi_b
+                FROM user_product_signal upi_a
+                INNER JOIN user_product_signal upi_b
                     ON upi_a.user_id = upi_b.user_id
                    AND upi_a.product_id <> upi_b.product_id
                 GROUP BY
@@ -354,7 +377,7 @@ async function trainProductRecommendations(client) {
                     upi.user_id,
                     ps.recommended_product_id AS product_id,
                     SUM(upi.rating * ps.similarity_score) AS recommendation_score
-                FROM public.user_product_interaction upi
+                FROM user_product_signal upi
                 INNER JOIN product_similarity ps
                     ON ps.source_product_id = upi.product_id
                 GROUP BY
@@ -386,6 +409,7 @@ async function trainProductRecommendations(client) {
             FROM ranked_recommendation
             WHERE ranking <= 30;
         `,
+        [purchaseSignalWeight],
     );
 }
 async function trainPromotionRecommendations(client) {
@@ -395,9 +419,32 @@ async function trainPromotionRecommendations(client) {
         `,
     );
 
+    const purchaseSignalWeight = await getIntegerParameter(
+        "purchase_signal_weight",
+        2,
+    );
+
     await client.query(
         `
-            WITH promotion_similarity AS (
+            WITH purchased_promotion AS (
+                SELECT DISTINCT p.user_id, pi.promotion_id
+                FROM public.purchase p
+                INNER JOIN public.purchase_item pi ON pi.purchase_id = p.id
+                WHERE p.status <> 'cancelled'
+                  AND pi.promotion_id IS NOT NULL
+            ),
+            user_promotion_signal AS (
+                SELECT
+                    COALESCE(upi.user_id, pp.user_id)         AS user_id,
+                    COALESCE(upi.promotion_id, pp.promotion_id) AS promotion_id,
+                    COALESCE(upi.rating, 0)
+                        + CASE WHEN pp.user_id IS NOT NULL THEN $1::numeric ELSE 0 END AS rating
+                FROM public.user_promotion_interaction upi
+                FULL OUTER JOIN purchased_promotion pp
+                    ON pp.user_id = upi.user_id
+                   AND pp.promotion_id = upi.promotion_id
+            ),
+            promotion_similarity AS (
                 SELECT
                     upi_a.promotion_id AS source_promotion_id,
                     upi_b.promotion_id AS recommended_promotion_id,
@@ -411,8 +458,8 @@ async function trainPromotionRecommendations(client) {
                             0
                         )
                     ) AS similarity_score
-                FROM public.user_promotion_interaction upi_a
-                INNER JOIN public.user_promotion_interaction upi_b
+                FROM user_promotion_signal upi_a
+                INNER JOIN user_promotion_signal upi_b
                     ON upi_a.user_id = upi_b.user_id
                    AND upi_a.promotion_id <> upi_b.promotion_id
                 GROUP BY
@@ -424,7 +471,7 @@ async function trainPromotionRecommendations(client) {
                     upi.user_id,
                     ps.recommended_promotion_id AS promotion_id,
                     SUM(upi.rating * ps.similarity_score) AS recommendation_score
-                FROM public.user_promotion_interaction upi
+                FROM user_promotion_signal upi
                 INNER JOIN promotion_similarity ps
                     ON ps.source_promotion_id = upi.promotion_id
                 GROUP BY
@@ -456,6 +503,7 @@ async function trainPromotionRecommendations(client) {
             FROM ranked_recommendation
             WHERE ranking <= 30;
         `,
+        [purchaseSignalWeight],
     );
 }
 let isCollaborativeFilteringTrainingRunning = false;
@@ -1858,8 +1906,14 @@ app.get(
     authenticateToken,
     async (req, res, next) => {
         try {
-            const [enabled, intervalMinutes, repeatDays, startHour, endHour] =
-                await Promise.all([
+            const [
+                enabled,
+                intervalMinutes,
+                repeatDays,
+                startHour,
+                endHour,
+                purchaseSignalWeight,
+            ] = await Promise.all([
                     getIntegerParameter("personalized_notification_enabled", 1),
                     getIntegerParameter(
                         "personalized_notification_interval_minutes",
@@ -1874,6 +1928,7 @@ app.get(
                         9,
                     ),
                     getIntegerParameter("personalized_notification_end_hour", 21),
+                    getIntegerParameter("purchase_signal_weight", 2),
                 ]);
 
             return sendSuccess(res, req, {
@@ -1885,6 +1940,7 @@ app.get(
                         repeatDays,
                         startHour,
                         endHour,
+                        purchaseSignalWeight,
                     },
                 },
             });
@@ -1898,8 +1954,14 @@ app.put(
     authenticateToken,
     async (req, res, next) => {
         try {
-            const { enabled, intervalMinutes, repeatDays, startHour, endHour } =
-                req.body ?? {};
+            const {
+                enabled,
+                intervalMinutes,
+                repeatDays,
+                startHour,
+                endHour,
+                purchaseSignalWeight,
+            } = req.body ?? {};
 
             if (typeof enabled !== "boolean") {
                 return sendError(res, req, {
@@ -1960,6 +2022,18 @@ app.put(
                 });
             }
 
+            if (
+                !Number.isInteger(purchaseSignalWeight) ||
+                purchaseSignalWeight < 0 ||
+                purchaseSignalWeight > 10
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'purchaseSignalWeight' debe ser un entero entre 0 y 10",
+                });
+            }
+
             const client = await pool.connect();
 
             try {
@@ -1974,6 +2048,7 @@ app.put(
                     ["personalized_notification_repeat_days", String(repeatDays)],
                     ["personalized_notification_start_hour", String(startHour)],
                     ["personalized_notification_end_hour", String(endHour)],
+                    ["purchase_signal_weight", String(purchaseSignalWeight)],
                 ];
 
                 for (const [key, value] of entries) {
@@ -2006,6 +2081,7 @@ app.put(
                         repeatDays,
                         startHour,
                         endHour,
+                        purchaseSignalWeight,
                     },
                 },
             });
@@ -3137,6 +3213,697 @@ app.delete("/api/v1/cart", authenticateToken, async (req, res, next) => {
         }
     },
 );
+/*
+ * Query compartida por purchase_item para calcular el unit_price efectivo de
+ * una promoción a partir de los productos que agrupa (promotion_product):
+ * precio promedio de esos productos, ajustado por discount_percentage o por
+ * buy_quantity/pay_quantity, según cuál tenga la promoción. Si la promoción
+ * no tiene productos asociados o ninguno de los dos ajustes aplica, resuelve
+ * a NULL (el caller decide el fallback a 0).
+ */
+const PROMOTION_UNIT_PRICE_SELECT = `
+    CASE
+        WHEN pr.id IS NULL THEN NULL
+        WHEN pr.discount_percentage IS NOT NULL
+            THEN promo_avg.avg_price * (1 - pr.discount_percentage / 100)
+        WHEN pr.buy_quantity IS NOT NULL
+            AND pr.pay_quantity IS NOT NULL
+            AND pr.buy_quantity > 0
+            THEN promo_avg.avg_price * pr.pay_quantity::numeric / pr.buy_quantity
+        ELSE NULL
+    END
+`;
+const PROMOTION_UNIT_PRICE_JOIN = `
+    LEFT JOIN (
+        SELECT pp.promotion_id, AVG(prod.price) AS avg_price
+        FROM public.promotion_product pp
+        INNER JOIN public.product prod ON prod.id = pp.product_id
+        GROUP BY pp.promotion_id
+    ) promo_avg ON promo_avg.promotion_id = pr.id
+`;
+
+/*
+ * Arma los ítems de una o varias compras (purchase_item), con los datos
+ * actuales del catálogo (para imagen/categoría) junto al snapshot guardado.
+ * Devuelve un Map<purchaseId, item[]>.
+ */
+async function fetchPurchaseItemsByPurchaseIds(purchaseIds) {
+    const itemsByPurchaseId = new Map();
+    if (purchaseIds.length === 0) {
+        return itemsByPurchaseId;
+    }
+
+    const result = await pool.query(
+        `
+            SELECT
+                pi.id,
+                pi.purchase_id AS "purchaseId",
+                CASE
+                    WHEN pi.product_id IS NOT NULL THEN 'product'
+                    ELSE 'promotion'
+                END AS "itemType",
+                pi.item_name AS "itemName",
+                pi.quantity,
+                pi.unit_price AS "unitPrice",
+                pi.line_total AS "lineTotal",
+                p.id AS "productId",
+                p.name AS "productName",
+                p.image AS "productImage",
+                pc.name AS "productCategoryName",
+                pr.id AS "promotionId",
+                pr.title AS "promotionTitle",
+                pr.image AS "promotionImage",
+                prc.name AS "promotionCategoryName"
+            FROM public.purchase_item pi
+            LEFT JOIN public.product p
+                ON p.id = pi.product_id
+            LEFT JOIN public.product_category pc
+                ON pc.id = p.product_category_id
+            LEFT JOIN public.promotion pr
+                ON pr.id = pi.promotion_id
+            LEFT JOIN public.promotion_category prc
+                ON prc.id = pr.promotion_category_id
+            WHERE pi.purchase_id = ANY($1::bigint[])
+            ORDER BY pi.id ASC;
+        `,
+        [purchaseIds],
+    );
+
+    for (const row of result.rows) {
+        const item = {
+            id: row.id,
+            type: row.itemType,
+            quantity: row.quantity,
+            itemName: row.itemName,
+            unitPrice: Number(row.unitPrice),
+            lineTotal: Number(row.lineTotal),
+            product:
+                row.itemType === "product"
+                    ? {
+                          id: row.productId,
+                          name: row.productName,
+                          image: row.productImage,
+                          categoryName: row.productCategoryName,
+                      }
+                    : null,
+            promotion:
+                row.itemType === "promotion"
+                    ? {
+                          id: row.promotionId,
+                          name: row.promotionTitle,
+                          image: row.promotionImage,
+                          categoryName: row.promotionCategoryName,
+                      }
+                    : null,
+        };
+
+        const list = itemsByPurchaseId.get(row.purchaseId) ?? [];
+        list.push(item);
+        itemsByPurchaseId.set(row.purchaseId, list);
+    }
+
+    return itemsByPurchaseId;
+}
+
+/*
+ * Protegido.
+ *
+ * Checkout: convierte el carrito del usuario autenticado en una compra
+ * (status = 'pending') y lo vacía, todo en una transacción.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.post("/api/v1/purchases", authenticateToken, async (req, res, next) => {
+    const client = await pool.connect();
+
+    try {
+        const userId = req.authenticatedUser.sub;
+
+        await client.query("BEGIN");
+
+        const cartResult = await client.query(
+            `
+                SELECT id
+                FROM public.shopping_cart
+                WHERE user_id = $1
+                LIMIT 1;
+            `,
+            [userId],
+        );
+
+        const cart = cartResult.rows[0];
+
+        if (!cart) {
+            await client.query("ROLLBACK");
+            return sendError(res, req, {
+                statusCode: 400,
+                message: "El carrito está vacío",
+            });
+        }
+
+        const cartItemsResult = await client.query(
+            `
+                SELECT
+                    sci.quantity,
+                    CASE
+                        WHEN sci.product_id IS NOT NULL THEN 'product'
+                        ELSE 'promotion'
+                    END AS "itemType",
+                    p.id AS "productId",
+                    p.name AS "productName",
+                    p.price AS "productPrice",
+                    pr.id AS "promotionId",
+                    pr.title AS "promotionTitle",
+                    (${PROMOTION_UNIT_PRICE_SELECT}) AS "promotionUnitPrice"
+                FROM public.shopping_cart_item sci
+                LEFT JOIN public.product p
+                    ON p.id = sci.product_id
+                LEFT JOIN public.promotion pr
+                    ON pr.id = sci.promotion_id
+                ${PROMOTION_UNIT_PRICE_JOIN}
+                WHERE sci.shopping_cart_id = $1;
+            `,
+            [cart.id],
+        );
+
+        if (cartItemsResult.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return sendError(res, req, {
+                statusCode: 400,
+                message: "El carrito está vacío",
+            });
+        }
+
+        const preparedItems = cartItemsResult.rows.map((row) => {
+            const isProduct = row.itemType === "product";
+            const itemName = isProduct ? row.productName : row.promotionTitle;
+            const unitPrice = Number(
+                (isProduct ? row.productPrice : row.promotionUnitPrice) ?? 0,
+            );
+            const lineTotal = unitPrice * row.quantity;
+
+            return {
+                productId: isProduct ? row.productId : null,
+                promotionId: isProduct ? null : row.promotionId,
+                itemName,
+                quantity: row.quantity,
+                unitPrice,
+                lineTotal,
+            };
+        });
+
+        const totalAmount = preparedItems.reduce(
+            (sum, item) => sum + item.lineTotal,
+            0,
+        );
+        const itemCount = preparedItems.reduce(
+            (sum, item) => sum + item.quantity,
+            0,
+        );
+
+        const purchaseResult = await client.query(
+            `
+                INSERT INTO public.purchase (
+                    user_id,
+                    status,
+                    total_amount,
+                    item_count
+                )
+                VALUES ($1, 'pending', $2, $3)
+                RETURNING
+                    id,
+                    user_id AS "userId",
+                    status,
+                    total_amount AS "totalAmount",
+                    item_count AS "itemCount",
+                    created_at AS "createdAt",
+                    updated_at AS "updatedAt",
+                    completed_at AS "completedAt",
+                    cancelled_at AS "cancelledAt";
+            `,
+            [userId, totalAmount, itemCount],
+        );
+
+        const purchase = purchaseResult.rows[0];
+
+        for (const item of preparedItems) {
+            await client.query(
+                `
+                    INSERT INTO public.purchase_item (
+                        purchase_id,
+                        product_id,
+                        promotion_id,
+                        item_name,
+                        quantity,
+                        unit_price,
+                        line_total
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7);
+                `,
+                [
+                    purchase.id,
+                    item.productId,
+                    item.promotionId,
+                    item.itemName,
+                    item.quantity,
+                    item.unitPrice,
+                    item.lineTotal,
+                ],
+            );
+        }
+
+        await client.query(
+            `
+                DELETE FROM public.shopping_cart_item
+                WHERE shopping_cart_id = $1;
+            `,
+            [cart.id],
+        );
+
+        await client.query(
+            `
+                UPDATE public.shopping_cart
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE id = $1;
+            `,
+            [cart.id],
+        );
+
+        await client.query("COMMIT");
+
+        const itemsByPurchaseId = await fetchPurchaseItemsByPurchaseIds([
+            purchase.id,
+        ]);
+
+        return sendSuccess(res, req, {
+            statusCode: 201,
+            message: "Compra registrada exitosamente",
+            data: {
+                purchase: {
+                    ...purchase,
+                    totalAmount: Number(purchase.totalAmount),
+                    items: itemsByPurchaseId.get(purchase.id) ?? [],
+                },
+            },
+        });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        next(error);
+    } finally {
+        client.release();
+    }
+});
+const PURCHASE_STATUSES = ["pending", "completed", "cancelled"];
+
+/*
+ * Público (mismo criterio que products/interaction/all): historial global de
+ * compras, paginado y filtrable por usuario, rango de fechas y estado.
+ * Consumo: web admin.
+ */
+app.get("/api/v1/purchases", authenticateToken, async (req, res, next) => {
+    try {
+        const query = req.query;
+
+        let username;
+        if (query.username !== undefined && query.username !== "") {
+            username = String(query.username);
+            if (!INTERACTION_TEXT_FILTER_REGEX.test(username)) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El parámetro 'username' contiene caracteres no permitidos",
+                });
+            }
+        }
+
+        const readDate = (paramName) => {
+            const raw = query[paramName];
+            if (raw === undefined || raw === "") {
+                return undefined;
+            }
+            const value = String(raw);
+            if (!INTERACTION_DATE_REGEX.test(value)) {
+                throw Object.assign(
+                    new Error(
+                        `El parámetro '${paramName}' debe tener el formato YYYY-MM-DD`,
+                    ),
+                    { statusCode: 400 },
+                );
+            }
+            return value;
+        };
+
+        let dateFrom;
+        let dateTo;
+        try {
+            dateFrom = readDate("dateFrom");
+            dateTo = readDate("dateTo");
+        } catch (validationError) {
+            return sendError(res, req, {
+                statusCode: 400,
+                message: validationError.message,
+            });
+        }
+
+        if (dateFrom && dateTo && dateFrom > dateTo) {
+            return sendError(res, req, {
+                statusCode: 400,
+                message:
+                    "La fecha 'desde' no puede ser posterior a la fecha 'hasta'",
+            });
+        }
+
+        let status;
+        if (query.status !== undefined && query.status !== "") {
+            status = String(query.status);
+            if (!PURCHASE_STATUSES.includes(status)) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El parámetro 'status' debe ser uno de: pending, completed, cancelled",
+                });
+            }
+        }
+
+        let page = Number.parseInt(query.page, 10);
+        if (!Number.isInteger(page) || page < 1) {
+            page = 1;
+        }
+
+        let pageSize = Number.parseInt(query.pageSize, 10);
+        if (!INTERACTION_PAGE_SIZES.includes(pageSize)) {
+            pageSize = 15;
+        }
+
+        const conditions = [];
+        const params = [];
+
+        if (username) {
+            params.push(`%${username}%`);
+            conditions.push(`u.username ILIKE $${params.length}`);
+        }
+        if (dateFrom) {
+            params.push(dateFrom);
+            conditions.push(`p.created_at >= $${params.length}::date`);
+        }
+        if (dateTo) {
+            params.push(dateTo);
+            conditions.push(
+                `p.created_at < ($${params.length}::date + INTERVAL '1 day')`,
+            );
+        }
+        if (status) {
+            params.push(status);
+            conditions.push(`p.status = $${params.length}`);
+        }
+
+        const whereClause =
+            conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+        params.push(pageSize);
+        const limitParamIndex = params.length;
+        params.push((page - 1) * pageSize);
+        const offsetParamIndex = params.length;
+
+        const result = await pool.query(
+            `
+                SELECT
+                    p.id,
+                    p.user_id AS "userId",
+                    u.username,
+                    p.status,
+                    p.total_amount AS "totalAmount",
+                    p.item_count AS "itemCount",
+                    p.created_at AS "createdAt",
+                    p.completed_at AS "completedAt",
+                    p.cancelled_at AS "cancelledAt",
+                    COUNT(*) OVER() AS "totalItems"
+                FROM public.purchase p
+                INNER JOIN public."user" u
+                    ON u.id = p.user_id
+                ${whereClause}
+                ORDER BY p.created_at DESC
+                LIMIT $${limitParamIndex}
+                OFFSET $${offsetParamIndex};
+            `,
+            params,
+        );
+
+        const totalItems =
+            result.rows.length > 0 ? Number(result.rows[0].totalItems) : 0;
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+        const purchases = result.rows.map(
+            ({ totalItems: _totalItems, totalAmount, ...row }) => ({
+                ...row,
+                totalAmount: Number(totalAmount),
+            }),
+        );
+
+        return sendSuccess(res, req, {
+            message: "Historial de compras recuperado exitosamente",
+            data: {
+                purchases,
+                pagination: { page, pageSize, totalItems, totalPages },
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+/*
+ * Protegido.
+ *
+ * Historial de compras del usuario autenticado, paginado, sin filtros,
+ * incluyendo los ítems de cada compra. Consumo: Android.
+ */
+app.get(
+    "/api/v1/purchases/me",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const userId = req.authenticatedUser.sub;
+
+            let page = Number.parseInt(req.query.page, 10);
+            if (!Number.isInteger(page) || page < 1) {
+                page = 1;
+            }
+
+            let pageSize = Number.parseInt(req.query.pageSize, 10);
+            if (!INTERACTION_PAGE_SIZES.includes(pageSize)) {
+                pageSize = 15;
+            }
+
+            const result = await pool.query(
+                `
+                    SELECT
+                        p.id,
+                        p.user_id AS "userId",
+                        p.status,
+                        p.total_amount AS "totalAmount",
+                        p.item_count AS "itemCount",
+                        p.created_at AS "createdAt",
+                        p.completed_at AS "completedAt",
+                        p.cancelled_at AS "cancelledAt",
+                        COUNT(*) OVER() AS "totalItems"
+                    FROM public.purchase p
+                    WHERE p.user_id = $1
+                    ORDER BY p.created_at DESC
+                    LIMIT $2
+                    OFFSET $3;
+                `,
+                [userId, pageSize, (page - 1) * pageSize],
+            );
+
+            const totalItems =
+                result.rows.length > 0 ? Number(result.rows[0].totalItems) : 0;
+            const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+            const purchaseIds = result.rows.map((row) => row.id);
+            const itemsByPurchaseId =
+                await fetchPurchaseItemsByPurchaseIds(purchaseIds);
+
+            const purchases = result.rows.map(
+                ({ totalItems: _totalItems, totalAmount, ...row }) => ({
+                    ...row,
+                    totalAmount: Number(totalAmount),
+                    items: itemsByPurchaseId.get(row.id) ?? [],
+                }),
+            );
+
+            return sendSuccess(res, req, {
+                message: "Historial de compras recuperado exitosamente",
+                data: {
+                    purchases,
+                    pagination: { page, pageSize, totalItems, totalPages },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Detalle de una compra con sus ítems.
+ *
+ * Header:
+ * Authorization: Bearer <accessToken>
+ */
+app.get(
+    "/api/v1/purchases/:purchaseId",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const purchaseId = Number(req.params.purchaseId);
+
+            if (!Number.isSafeInteger(purchaseId) || purchaseId <= 0) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El purchaseId debe ser un entero positivo",
+                });
+            }
+
+            const result = await pool.query(
+                `
+                    SELECT
+                        p.id,
+                        p.user_id AS "userId",
+                        u.username,
+                        p.status,
+                        p.total_amount AS "totalAmount",
+                        p.item_count AS "itemCount",
+                        p.created_at AS "createdAt",
+                        p.completed_at AS "completedAt",
+                        p.cancelled_at AS "cancelledAt"
+                    FROM public.purchase p
+                    INNER JOIN public."user" u
+                        ON u.id = p.user_id
+                    WHERE p.id = $1
+                    LIMIT 1;
+                `,
+                [purchaseId],
+            );
+
+            const purchase = result.rows[0];
+
+            if (!purchase) {
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message: "No se encontró la compra",
+                });
+            }
+
+            const itemsByPurchaseId = await fetchPurchaseItemsByPurchaseIds([
+                purchase.id,
+            ]);
+
+            return sendSuccess(res, req, {
+                message: "Compra recuperada exitosamente",
+                data: {
+                    purchase: {
+                        ...purchase,
+                        totalAmount: Number(purchase.totalAmount),
+                        items: itemsByPurchaseId.get(purchase.id) ?? [],
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+/*
+ * Protegido.
+ *
+ * Cambia el estado de una compra (a cargo del admin desde la web).
+ *
+ * Body:
+ * { "status": "completed" | "cancelled" | "pending" }
+ */
+app.patch(
+    "/api/v1/purchases/:purchaseId/status",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const purchaseId = Number(req.params.purchaseId);
+
+            if (!Number.isSafeInteger(purchaseId) || purchaseId <= 0) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El purchaseId debe ser un entero positivo",
+                });
+            }
+
+            const { status } = req.body ?? {};
+
+            if (!PURCHASE_STATUSES.includes(status)) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'status' debe ser uno de: pending, completed, cancelled",
+                });
+            }
+
+            const result = await pool.query(
+                `
+                    WITH input AS (
+                        SELECT
+                            $1::bigint AS id,
+                            $2::character varying(20) AS status
+                    )
+                    UPDATE public.purchase p
+                    SET
+                        status = i.status,
+                        updated_at = CURRENT_TIMESTAMP,
+                        completed_at = CASE
+                            WHEN i.status = 'completed' THEN CURRENT_TIMESTAMP
+                            ELSE NULL
+                        END,
+                        cancelled_at = CASE
+                            WHEN i.status = 'cancelled' THEN CURRENT_TIMESTAMP
+                            ELSE NULL
+                        END
+                    FROM input i
+                    WHERE p.id = i.id
+                    RETURNING
+                        p.id,
+                        p.user_id AS "userId",
+                        p.status,
+                        p.total_amount AS "totalAmount",
+                        p.item_count AS "itemCount",
+                        p.created_at AS "createdAt",
+                        p.updated_at AS "updatedAt",
+                        p.completed_at AS "completedAt",
+                        p.cancelled_at AS "cancelledAt";
+                `,
+                [purchaseId, status],
+            );
+
+            const purchase = result.rows[0];
+
+            if (!purchase) {
+                return sendError(res, req, {
+                    statusCode: 404,
+                    message: "No se encontró la compra",
+                });
+            }
+
+            return sendSuccess(res, req, {
+                message: "Estado de la compra actualizado exitosamente",
+                data: {
+                    purchase: {
+                        ...purchase,
+                        totalAmount: Number(purchase.totalAmount),
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
 
 
 
@@ -3596,15 +4363,20 @@ app.get("/api/v1/dashboard/engagement", authenticateToken, async (req, res, next
                         ) active_fan
                     ) AS fans_with_interaction,
                     (
-                        SELECT COUNT(DISTINCT sc.user_id)
-                        FROM public.shopping_cart sc
-                        INNER JOIN public.shopping_cart_item sci
-                            ON sci.shopping_cart_id = sc.id
-                    ) AS fans_with_cart,
-                    COALESCE(
-                        (SELECT SUM(sci.quantity) FROM public.shopping_cart_item sci),
-                        0
-                    ) AS cart_items;
+                        SELECT COUNT(DISTINCT user_id)
+                        FROM public.purchase
+                        WHERE status <> 'cancelled'
+                    ) AS fans_with_purchase,
+                    (SELECT COUNT(*) FROM public.purchase WHERE status <> 'cancelled') AS purchases,
+                    COALESCE((
+                        SELECT SUM(pi.quantity)
+                        FROM public.purchase_item pi
+                        INNER JOIN public.purchase p ON p.id = pi.purchase_id
+                        WHERE p.status <> 'cancelled'
+                    ), 0) AS purchased_items,
+                    COALESCE((
+                        SELECT SUM(total_amount) FROM public.purchase WHERE status <> 'cancelled'
+                    ), 0) AS purchased_amount;
             `),
         ]);
 
@@ -3666,9 +4438,9 @@ app.get("/api/v1/dashboard/engagement", authenticateToken, async (req, res, next
 
         const funnelRow = funnelResult.rows[0];
         const fansWithInteraction = Number(funnelRow.fans_with_interaction);
-        const fansWithCart = Number(funnelRow.fans_with_cart);
-        const interactionToCartRate = fansWithInteraction > 0
-            ? fansWithCart / fansWithInteraction
+        const fansWithPurchase = Number(funnelRow.fans_with_purchase);
+        const interactionToPurchaseRate = fansWithInteraction > 0
+            ? fansWithPurchase / fansWithInteraction
             : 0;
 
         return sendSuccess(res, req, {
@@ -3711,9 +4483,11 @@ app.get("/api/v1/dashboard/engagement", authenticateToken, async (req, res, next
                 },
                 funnel: {
                     fansWithInteraction,
-                    fansWithCart,
-                    cartItems: Number(funnelRow.cart_items),
-                    interactionToCartRate,
+                    fansWithPurchase,
+                    purchases: Number(funnelRow.purchases),
+                    purchasedItems: Number(funnelRow.purchased_items),
+                    purchasedAmount: Number(funnelRow.purchased_amount),
+                    interactionToPurchaseRate,
                 },
             },
         });
