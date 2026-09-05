@@ -90,14 +90,42 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   function in the same paginated query (no second round-trip).
 - `cart/*` — shopping cart CRUD: `GET cart`, `POST cart/products`, `POST cart/promotions`,
   `PATCH cart/items/:cartItemId`, `DELETE cart/items/:cartItemId`, `DELETE cart` (all authenticated)
+- `purchases/*` — authenticated. `POST purchases` is checkout: converts the authenticated user's
+  cart into a `purchase` (`status = 'pending'`) plus one `purchase_item` per cart line, in a single
+  transaction, then empties the cart (same statement pattern as `DELETE cart`) — `400` if the cart is
+  missing or empty, and nothing is created. A product item's `unit_price` snapshot is `product.price`
+  at checkout time; a promotion item's `unit_price` is derived (no stored promotion price column)
+  from `AVG(product.price)` over `promotion_product`'s linked products, adjusted by
+  `discount_percentage` or by `pay_quantity/buy_quantity`, falling back to `0` if the promotion has no
+  linked products (see the `PROMOTION_UNIT_PRICE_SELECT`/`PROMOTION_UNIT_PRICE_JOIN` constants right
+  before this route group — reused by checkout's cart read). `item_name`/`unit_price`/`line_total` are
+  copied at checkout and never recalculated against the catalog afterward, so a later price or
+  promotion change doesn't alter historical purchases. `GET purchases` is the paginated/filterable
+  global history (web admin) — same paginate-with-`COUNT(*) OVER()` pattern as
+  `products/interaction/all`, reusing `INTERACTION_TEXT_FILTER_REGEX`/`INTERACTION_DATE_REGEX`/
+  `INTERACTION_PAGE_SIZES`, with its own `status` filter (`pending`/`completed`/`cancelled`) validated
+  against `PURCHASE_STATUSES`; `GET purchases/me` is the same paginated shape forced to the
+  authenticated user, **with** each purchase's items inlined (via the shared
+  `fetchPurchaseItemsByPurchaseIds()` helper) to avoid Android needing an N+1 detail call;
+  `GET purchases/:purchaseId` is the single-purchase detail (`404` if missing), items included, current
+  catalog `image`/`categoryName` joined in per item alongside the immutable snapshot fields;
+  `PATCH purchases/:purchaseId/status` updates `status` and stamps/clears `completed_at`/
+  `cancelled_at` accordingly (`404` if missing, `400` if `status` isn't one of the three values). The
+  status update is written as `UPDATE ... FROM (SELECT $1::bigint, $2::varchar ...)` rather than
+  referencing `$2` directly in both the `SET` and the `CASE` branches — Postgres can't always infer a
+  consistent type for a bare parameter reused across an assignment and a comparison in the same
+  statement ("inconsistent types deduced for parameter"), so the CTE pins the type once.
 - `recommendations/train` — manually triggers collaborative filtering; **not authenticated**; no-ops
   (`{ skipped: true }`) if a run is already in progress
 - `products/recommendations`, `promotions/recommendations` — authenticated; read the precomputed
   recommendation tables, they do not train on request
 - `dashboard/engagement` — authenticated; aggregates KPIs, a 30-day activity approximation (grouped
   by `last_interaction_at`, not a real event history — see the schema note below), top-5 product/
-  promotion rankings, recommender coverage, and the interaction→cart funnel, for the web's
-  `/dashboard` page
+  promotion rankings, recommender coverage, and the interaction→purchase funnel, for the web's
+  `/dashboard` page. The `funnel` block reads `purchase`/`purchase_item` (`status <> 'cancelled'`
+  counts as converted; `pending` **and** `completed` both count, only `cancelled` doesn't) — it no
+  longer looks at `shopping_cart`/`shopping_cart_item` at all, so there is no cart-based funnel
+  fallback if `purchase` is empty
 - `users` — authenticated; lists all users (`id`, `username`, `email`, `hasFcmToken`), used by the
   web's Notifications tab to populate its recipient autocomplete. `id` is explicitly cast
   (`id::integer`) in the query — `pg` returns `bigint` columns as strings by default, and this `id`
@@ -128,13 +156,16 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   `target: "users"` had exactly one) and to render the full per-recipient breakdown in its detail modal
 - `DELETE notifications/log/:id` — authenticated; deletes one `notification_log` row (and its
   `notification_log_recipient` rows via `ON DELETE CASCADE`); `404` if the id doesn't exist
-- `GET`/`PUT parameters/personalized-notifications` — authenticated; read/write the 5 `parameters`
-  rows driving the personalized notification scheduler below (`data.settings`: `enabled`,
-  `intervalMinutes`, `repeatDays`, `startHour`, `endHour`). `PUT` validates ranges (`intervalMinutes`
-  1-1440, `repeatDays` 0-365, `startHour` 0-23, `endHour` 1-24, `startHour < endHour`) and `400`s via
+- `GET`/`PUT parameters/personalized-notifications` — authenticated; read/write the 6 `parameters`
+  rows driving the personalized notification scheduler below plus the recommender's purchase boost
+  (`data.settings`: `enabled`, `intervalMinutes`, `repeatDays`, `startHour`, `endHour`,
+  `purchaseSignalWeight`). `PUT` validates ranges (`intervalMinutes` 1-1440, `repeatDays` 0-365,
+  `startHour` 0-23, `endHour` 1-24, `startHour < endHour`, `purchaseSignalWeight` 0-10) and `400`s via
   `sendError` otherwise; persists with `INSERT ... ON CONFLICT (key) DO UPDATE` per key inside a
   transaction. A changed `intervalMinutes` only takes effect on the *next* scheduled cycle (the
-  current one is already scheduled) — same behavior as the CF training interval below.
+  current one is already scheduled) — same behavior as the CF training interval below. The endpoint's
+  path/name stayed as-is (not renamed to something recommender-related) specifically so the existing
+  web client didn't need a route change for this one extra field.
 - `POST notifications/personalized/run` — authenticated; runs
   `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.
@@ -160,16 +191,24 @@ users with a non-null `fcm_token` whose selected product hasn't been sent to the
 now means a system-originated send; the web's `/notifications` tab renders that as
 "Sistema (automático)".
 
-**Recommendations engine**: `trainCollaborativeFiltering()` (server.js:452) runs product- and
-promotion-level collaborative filtering in-process against interaction/cart data
-(`trainProductRecommendations`/`trainPromotionRecommendations`, server.js:311/381) inside a single
-transaction, writing to `user_product_recommendation` / `user_promotion_recommendation`. A global
-`isCollaborativeFilteringTrainingRunning` flag prevents overlapping runs. In addition to the manual
-`POST /api/v1/recommendations/train` trigger, `startCollaborativeFilteringTrainingScheduler()`
-(server.js:498, called from `app.listen`'s callback) self-schedules on a loop via `setTimeout`, first
-firing 10s after boot, then re-reading the interval from a DB-stored parameter
-(`getIntegerParameter("collaborative_filtering_training_interval_minutes", 10)`, server.js:288) after
-every run — so the interval can be changed at runtime by updating that DB row, no redeploy needed.
+**Recommendations engine**: `trainCollaborativeFiltering()` runs product- and promotion-level
+collaborative filtering in-process against interaction **and purchase** data
+(`trainProductRecommendations`/`trainPromotionRecommendations`) inside a single transaction, writing
+to `user_product_recommendation` / `user_promotion_recommendation`. Each of those two functions
+prepends a `user_product_signal`/`user_promotion_signal` CTE that `FULL OUTER JOIN`s
+`user_product_interaction`/`user_promotion_interaction` against a `purchased_product`/
+`purchased_promotion` CTE (rows from `purchase`/`purchase_item` where `purchase.status <> 'cancelled'`),
+adding `getIntegerParameter("purchase_signal_weight", 2)` points on top of any existing `rating` for a
+purchased (user, product) pair — the `FULL OUTER JOIN` is what lets a purchased item with **no** prior
+interaction still enter the similarity matrix, with `rating` equal to just the purchase weight. This
+signal CTE replaces `user_product_interaction`/`user_promotion_interaction` in all three places the
+old query referenced them (`upi_a`, `upi_b`, the outer `upi` in `user_candidate_recommendation`) — the
+similarity/ranking SQL itself is unchanged. A global `isCollaborativeFilteringTrainingRunning` flag
+prevents overlapping runs. In addition to the manual `POST /api/v1/recommendations/train` trigger,
+`startCollaborativeFilteringTrainingScheduler()` (called from `app.listen`'s callback) self-schedules
+on a loop via `setTimeout`, first firing 10s after boot, then re-reading the interval from a DB-stored
+parameter (`getIntegerParameter("collaborative_filtering_training_interval_minutes", 10)`) after every
+run — so the interval can be changed at runtime by updating that DB row, no redeploy needed.
 
 **Health/root**: `GET /` returns plain text (not the JSON envelope) — deliberate, per the comment
 directly above it in server.js. `GET /api/v1/health` does a DB round-trip check.
