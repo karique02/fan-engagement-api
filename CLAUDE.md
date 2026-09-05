@@ -128,6 +128,37 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   `target: "users"` had exactly one) and to render the full per-recipient breakdown in its detail modal
 - `DELETE notifications/log/:id` — authenticated; deletes one `notification_log` row (and its
   `notification_log_recipient` rows via `ON DELETE CASCADE`); `404` if the id doesn't exist
+- `GET`/`PUT parameters/personalized-notifications` — authenticated; read/write the 5 `parameters`
+  rows driving the personalized notification scheduler below (`data.settings`: `enabled`,
+  `intervalMinutes`, `repeatDays`, `startHour`, `endHour`). `PUT` validates ranges (`intervalMinutes`
+  1-1440, `repeatDays` 0-365, `startHour` 0-23, `endHour` 1-24, `startHour < endHour`) and `400`s via
+  `sendError` otherwise; persists with `INSERT ... ON CONFLICT (key) DO UPDATE` per key inside a
+  transaction. A changed `intervalMinutes` only takes effect on the *next* scheduled cycle (the
+  current one is already scheduled) — same behavior as the CF training interval below.
+- `POST notifications/personalized/run` — authenticated; runs
+  `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
+  flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.
+  `{ skipped: true }` if a cycle is already running, same criterion as `/recommendations/train`.
+
+**Personalized notifications**: `startPersonalizedNotificationScheduler()` mirrors
+`startCollaborativeFilteringTrainingScheduler()` exactly — first fire 20s after boot (offset from the
+training scheduler's 10s so they don't collide), then re-reads
+`personalized_notification_interval_minutes` from `parameters` after every cycle to reschedule. Each
+cycle (`runPersonalizedNotificationCycle`, guarded by its own `isPersonalizedNotificationCycleRunning`
+flag): unless `ignoreSchedule: true`, skips if `personalized_notification_enabled = 0` or the current
+hour in `America/Lima` (via `Intl.DateTimeFormat`) falls outside
+`[personalized_notification_start_hour, personalized_notification_end_hour)`; otherwise selects, in one
+query, the highest-`recommendation_score` product per user from `user_product_recommendation` among
+users with a non-null `fcm_token` whose selected product hasn't been sent to them (`target_type =
+'personalized'`) within the last `personalized_notification_repeat_days` days; sends one
+`getMessaging().sendEach(...)` message per user (title `"Te puede interesar"`, fixed body template,
+`product.image` as `imageUrl` when present) in batches of ≤500; clears `fcm_token` on
+`messaging/registration-token-not-registered`/`messaging/invalid-registration-token` exactly like
+`/notifications/send`; and inserts one `notification_log` row per notified user
+(`target_type='personalized'`, `sent_by_user_id=NULL`, `product_id` set) plus its
+`notification_log_recipient` row, in one transaction. `sent_by_user_id IS NULL` on `notification_log`
+now means a system-originated send; the web's `/notifications` tab renders that as
+"Sistema (automático)".
 
 **Recommendations engine**: `trainCollaborativeFiltering()` (server.js:452) runs product- and
 promotion-level collaborative filtering in-process against interaction/cart data
