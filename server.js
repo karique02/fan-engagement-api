@@ -532,6 +532,261 @@ function startCollaborativeFilteringTrainingScheduler() {
 
     setTimeout(executeTrainingCycle, 10_000);
 }
+let isPersonalizedNotificationCycleRunning = false;
+async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
+    if (isPersonalizedNotificationCycleRunning) {
+        console.log("Personalized notification cycle skipped because another cycle is already running");
+        return {
+            skipped: true,
+            reason: "Cycle already running",
+        };
+    }
+
+    isPersonalizedNotificationCycleRunning = true;
+
+    try {
+        if (ignoreSchedule !== true) {
+            const enabled = await getIntegerParameter(
+                "personalized_notification_enabled",
+                1,
+            );
+
+            if (enabled === 0) {
+                console.log("Personalized notification cycle skipped: disabled");
+                return {
+                    skipped: true,
+                    reason: "Personalized notifications are disabled",
+                };
+            }
+
+            const startHour = await getIntegerParameter(
+                "personalized_notification_start_hour",
+                9,
+            );
+            const endHour = await getIntegerParameter(
+                "personalized_notification_end_hour",
+                21,
+            );
+
+            const currentHour = Number.parseInt(
+                new Intl.DateTimeFormat("es-PE", {
+                    timeZone: "America/Lima",
+                    hour: "numeric",
+                    hour12: false,
+                }).format(new Date()),
+                10,
+            );
+
+            if (currentHour < startHour || currentHour >= endHour) {
+                console.log(`Personalized notification cycle skipped: outside schedule (hour ${currentHour}, window [${startHour}, ${endHour}))`);
+                return {
+                    skipped: true,
+                    reason: "Outside the configured schedule",
+                };
+            }
+        }
+
+        const repeatDays = await getIntegerParameter(
+            "personalized_notification_repeat_days",
+            7,
+        );
+
+        const candidatesResult = await pool.query(
+            `
+                WITH candidate AS (
+                    SELECT
+                        u.id            AS user_id,
+                        u.username,
+                        u.fcm_token,
+                        p.id            AS product_id,
+                        p.name          AS product_name,
+                        p.image         AS product_image,
+                        upr.recommendation_score,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY u.id
+                            ORDER BY upr.recommendation_score DESC, p.id ASC
+                        ) AS ranking
+                    FROM public."user" u
+                    INNER JOIN public.user_product_recommendation upr ON upr.user_id = u.id
+                    INNER JOIN public.product p ON p.id = upr.product_id
+                    WHERE u.fcm_token IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM public.notification_log nl
+                          INNER JOIN public.notification_log_recipient nlr
+                              ON nlr.notification_log_id = nl.id
+                          WHERE nl.target_type = 'personalized'
+                            AND nl.product_id = upr.product_id
+                            AND nlr.user_id = u.id
+                            AND nl.created_at >= CURRENT_TIMESTAMP - ($1 || ' days')::interval
+                      )
+                )
+                SELECT user_id::integer, username, fcm_token, product_id::integer, product_name, product_image
+                FROM candidate
+                WHERE ranking = 1;
+            `,
+            [repeatDays],
+        );
+
+        const candidates = candidatesResult.rows;
+
+        const invalidTokenErrorCodes = new Set([
+            "messaging/registration-token-not-registered",
+            "messaging/invalid-registration-token",
+        ]);
+
+        const results = candidates.map((candidate) => ({
+            userId: candidate.user_id,
+            username: candidate.username,
+            productId: candidate.product_id,
+            productName: candidate.product_name,
+            productImage: candidate.product_image,
+            fcmToken: candidate.fcm_token,
+            status: "pending",
+        }));
+
+        const tokensToClear = [];
+
+        for (let i = 0; i < results.length; i += 500) {
+            const batch = results.slice(i, i + 500);
+
+            const response = await getMessaging().sendEach(
+                batch.map((candidate) => ({
+                    token: candidate.fcmToken,
+                    notification: {
+                        title: "Te puede interesar",
+                        body: `${candidate.productName} podría gustarte. ¡Míralo en la app!`,
+                        ...(candidate.productImage
+                            ? { imageUrl: candidate.productImage }
+                            : {}),
+                    },
+                })),
+            );
+
+            response.responses.forEach((sendResponse, index) => {
+                const candidate = batch[index];
+                if (sendResponse.success) {
+                    candidate.status = "delivered";
+                    return;
+                }
+
+                candidate.status = "failed";
+                if (invalidTokenErrorCodes.has(sendResponse.error?.code)) {
+                    tokensToClear.push(candidate.userId);
+                }
+            });
+        }
+
+        if (tokensToClear.length > 0) {
+            await pool.query(
+                `UPDATE public."user" SET fcm_token = NULL WHERE id = ANY($1);`,
+                [tokensToClear],
+            );
+        }
+
+        const notifiedResults = results.filter(
+            (candidate) => candidate.status === "delivered" || candidate.status === "failed",
+        );
+
+        if (notifiedResults.length > 0) {
+            const client = await pool.connect();
+
+            try {
+                await client.query("BEGIN");
+
+                for (const candidate of notifiedResults) {
+                    const deliveredCount = candidate.status === "delivered" ? 1 : 0;
+                    const failedCount = candidate.status === "failed" ? 1 : 0;
+
+                    const logResult = await client.query(
+                        `
+                            INSERT INTO public.notification_log
+                                (title, body, image_url, target_type, sent_by_user_id, product_id, delivered_count, failed_count, no_token_count)
+                            VALUES ($1, $2, $3, 'personalized', NULL, $4, $5, $6, 0)
+                            RETURNING id;
+                        `,
+                        [
+                            "Te puede interesar",
+                            `${candidate.productName} podría gustarte. ¡Míralo en la app!`,
+                            candidate.productImage,
+                            candidate.productId,
+                            deliveredCount,
+                            failedCount,
+                        ],
+                    );
+                    const notificationLogId = logResult.rows[0].id;
+
+                    await client.query(
+                        `
+                            INSERT INTO public.notification_log_recipient
+                                (notification_log_id, user_id, status)
+                            VALUES ($1, $2, $3);
+                        `,
+                        [notificationLogId, candidate.userId, candidate.status],
+                    );
+                }
+
+                await client.query("COMMIT");
+            } catch (error) {
+                await client.query("ROLLBACK");
+                throw error;
+            } finally {
+                client.release();
+            }
+        }
+
+        const summary = {
+            skipped: false,
+            evaluatedUsers: candidates.length,
+            notified: notifiedResults.length,
+            delivered: notifiedResults.filter((candidate) => candidate.status === "delivered").length,
+            failed: notifiedResults.filter((candidate) => candidate.status === "failed").length,
+            results: notifiedResults.map((candidate) => ({
+                userId: candidate.userId,
+                username: candidate.username,
+                productId: candidate.productId,
+                productName: candidate.productName,
+                status: candidate.status,
+            })),
+        };
+
+        console.log("Personalized notification cycle completed", summary);
+
+        return summary;
+    } catch (error) {
+        console.error("Personalized notification cycle failed", error);
+        throw error;
+    } finally {
+        isPersonalizedNotificationCycleRunning = false;
+    }
+}
+function startPersonalizedNotificationScheduler() {
+    const executeNotificationCycle = async () => {
+        let intervalMinutes = 60;
+
+        try {
+            intervalMinutes = await getIntegerParameter(
+                "personalized_notification_interval_minutes",
+                60,
+            );
+
+            console.log(`Starting personalized notification cycle. Next interval: ${intervalMinutes} minutes`);
+
+            await runPersonalizedNotificationCycle({ ignoreSchedule: false });
+        } catch (error) {
+            console.error("Scheduled personalized notification cycle failed", error);
+        } finally {
+            const nextExecutionDelayMilliseconds = intervalMinutes * 60 * 1000;
+
+            setTimeout(
+                executeNotificationCycle,
+                nextExecutionDelayMilliseconds,
+            );
+        }
+    };
+
+    setTimeout(executeNotificationCycle, 20_000);
+}
 
 
 /*
@@ -1500,7 +1755,7 @@ app.get(
                     nl.created_at AS "createdAt",
                     COUNT(*) OVER() AS "totalItems"
                 FROM public.notification_log nl
-                INNER JOIN public."user" sender
+                LEFT JOIN public."user" sender
                     ON sender.id = nl.sent_by_user_id
                 ${whereClause}
                 ORDER BY nl.created_at DESC
@@ -1592,6 +1847,187 @@ app.delete(
             return sendSuccess(res, req, {
                 message: "Registro de notificación eliminado exitosamente",
                 data: { id },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.get(
+    "/api/v1/parameters/personalized-notifications",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const [enabled, intervalMinutes, repeatDays, startHour, endHour] =
+                await Promise.all([
+                    getIntegerParameter("personalized_notification_enabled", 1),
+                    getIntegerParameter(
+                        "personalized_notification_interval_minutes",
+                        60,
+                    ),
+                    getIntegerParameter(
+                        "personalized_notification_repeat_days",
+                        7,
+                    ),
+                    getIntegerParameter(
+                        "personalized_notification_start_hour",
+                        9,
+                    ),
+                    getIntegerParameter("personalized_notification_end_hour", 21),
+                ]);
+
+            return sendSuccess(res, req, {
+                message: "Configuración obtenida exitosamente",
+                data: {
+                    settings: {
+                        enabled: enabled === 1,
+                        intervalMinutes,
+                        repeatDays,
+                        startHour,
+                        endHour,
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.put(
+    "/api/v1/parameters/personalized-notifications",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const { enabled, intervalMinutes, repeatDays, startHour, endHour } =
+                req.body ?? {};
+
+            if (typeof enabled !== "boolean") {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message: "El campo 'enabled' debe ser un booleano",
+                });
+            }
+
+            if (
+                !Number.isInteger(intervalMinutes) ||
+                intervalMinutes < 1 ||
+                intervalMinutes > 1440
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'intervalMinutes' debe ser un entero entre 1 y 1440",
+                });
+            }
+
+            if (
+                !Number.isInteger(repeatDays) ||
+                repeatDays < 0 ||
+                repeatDays > 365
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'repeatDays' debe ser un entero entre 0 y 365",
+                });
+            }
+
+            if (
+                !Number.isInteger(startHour) ||
+                startHour < 0 ||
+                startHour > 23
+            ) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'startHour' debe ser un entero entre 0 y 23",
+                });
+            }
+
+            if (!Number.isInteger(endHour) || endHour < 1 || endHour > 24) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'endHour' debe ser un entero entre 1 y 24",
+                });
+            }
+
+            if (startHour >= endHour) {
+                return sendError(res, req, {
+                    statusCode: 400,
+                    message:
+                        "El campo 'startHour' debe ser menor que 'endHour'",
+                });
+            }
+
+            const client = await pool.connect();
+
+            try {
+                await client.query("BEGIN");
+
+                const entries = [
+                    ["personalized_notification_enabled", enabled ? "1" : "0"],
+                    [
+                        "personalized_notification_interval_minutes",
+                        String(intervalMinutes),
+                    ],
+                    ["personalized_notification_repeat_days", String(repeatDays)],
+                    ["personalized_notification_start_hour", String(startHour)],
+                    ["personalized_notification_end_hour", String(endHour)],
+                ];
+
+                for (const [key, value] of entries) {
+                    await client.query(
+                        `
+                            INSERT INTO public.parameters (key, value)
+                            VALUES ($1, $2)
+                            ON CONFLICT (key) DO UPDATE
+                                SET value = EXCLUDED.value,
+                                    updated_at = CURRENT_TIMESTAMP;
+                        `,
+                        [key, value],
+                    );
+                }
+
+                await client.query("COMMIT");
+            } catch (error) {
+                await client.query("ROLLBACK");
+                throw error;
+            } finally {
+                client.release();
+            }
+
+            return sendSuccess(res, req, {
+                message: "Configuración actualizada exitosamente",
+                data: {
+                    settings: {
+                        enabled,
+                        intervalMinutes,
+                        repeatDays,
+                        startHour,
+                        endHour,
+                    },
+                },
+            });
+        } catch (error) {
+            next(error);
+        }
+    },
+);
+app.post(
+    "/api/v1/notifications/personalized/run",
+    authenticateToken,
+    async (req, res, next) => {
+        try {
+            const result = await runPersonalizedNotificationCycle({
+                ignoreSchedule: true,
+            });
+
+            return sendSuccess(res, req, {
+                message: result.skipped
+                    ? "Ya hay un ciclo en curso"
+                    : "Ciclo de notificaciones personalizadas ejecutado exitosamente",
+                data: result,
             });
         } catch (error) {
             next(error);
@@ -3419,4 +3855,5 @@ app.listen(port, host, () => {
     console.log(`Server running on port ${port}`);
 
     startCollaborativeFilteringTrainingScheduler();
+    startPersonalizedNotificationScheduler();
 });
