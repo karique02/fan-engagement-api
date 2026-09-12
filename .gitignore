@@ -17,6 +17,10 @@ pnpm-debug.log*
 # Coverage
 coverage/
 
+# Smoke test output (scripts/smoke.sh) — contains live tokens/data, never versioned
+/out/
+/out-antes/
+
 # Build output
 dist/
 build/
