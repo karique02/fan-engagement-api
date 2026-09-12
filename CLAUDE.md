@@ -23,8 +23,9 @@ at boot. It must belong to the same Firebase project as `fan-engagement-android`
 `google-services.json`. The installed `firebase-admin` major version (14.x) uses the modular API —
 `initializeApp`/`cert` from `firebase-admin/app` and `getMessaging` from `firebase-admin/messaging`
 (not `admin.credential.cert(...)`/`admin.messaging()`, which don't exist on this version's default
-export). `initializeApp({ credential: cert(...) })` runs near the top of `server.js`, backing the
-`notifications/*` routes below.
+export). `initializeApp({ credential: cert(...) })` runs as a side effect of requiring
+`src/config/firebase.js` (required once from `src/app.js`), backing the `notifications/*` routes
+below.
 
 `NODE_ENV=production` switches the `pg` Pool to `ssl: { rejectUnauthorized: false }`; otherwise SSL
 is disabled. SMTP is Gmail specifically (`nodemailer.createTransport({ service: "gmail", ... })`),
@@ -32,25 +33,65 @@ using `SMTP_USER`/`SMTP_PASS` as Gmail app-credentials.
 
 ## Architecture
 
-Everything lives in one file: `server.js` (~2500 lines, plain Express, CommonJS). There is no
-router/controller/service/model split — to find or add an endpoint, search this file directly for
-its path. Endpoints are defined in file order roughly matching the grouping below; add new routes
-near their sibling group rather than at the end of the file.
+Modular by feature (spec 08). `server.js` at the repo root is ~10 lines: it requires `src/app.js`,
+calls `app.listen(...)`, and starts the two background job schedulers. Everything else lives under
+`src/`:
 
-**Data access**: raw `pg` `Pool`, no ORM/query builder. SQL is written inline per-route as tagged
-template strings against `public.<table>` qualified names, with `$1`/`$2`… placeholders. Multi-step
-writes (e.g. recommendation training) explicitly `BEGIN`/`COMMIT`/`ROLLBACK` on a checked-out client
-via `pool.connect()` — follow that pattern for any new multi-statement transaction instead of relying
-on autocommit per query.
+```
+src/
+  app.js                  # express, cors, json, mounts every module router, 404 + error handler
+  config/                 # env.js, database.js (pg Pool), firebase.js, mailer.js
+  shared/
+    http/                 # response.js (sendSuccess/sendError), asyncHandler.js
+    errors/                # AppError.js, error.middleware.js, notFound.middleware.js
+    middlewares/           # authenticateToken.js
+    validation/            # listQuery.js (parseInteractionListQuery), patterns.js (regexes, statuses)
+    sql/                   # promotionUnitPrice.js (PROMOTION_UNIT_PRICE_SELECT/JOIN)
+  modules/
+    health/                # GET /, GET /api/v1/health
+    auth/                  # register, login, verify-email, resend-email-verification + templates/
+    users/                 # GET /users, PUT|DELETE /users/me/fcm-token
+    images/                # GET /images
+    catalog/               # GET /products, GET /promotions
+    interactions/          # products/promotions interaction routes (2 public, 2 authenticated)
+    cart/                  # 6 shopping cart routes
+    purchases/             # checkout + history routes, fetchPurchaseItemsByPurchaseIds
+    notifications/         # send, log, delete log, personalized/run
+    parameters/            # GET|PUT personalized-notifications, getIntegerParameter()
+    recommendations/       # train (delegates to the CF job), products/promotions recommendations
+    dashboard/             # GET /dashboard/engagement
+  jobs/
+    collaborativeFiltering.job.js     # trainCollaborativeFiltering + its scheduler + running-flag
+    personalizedNotifications.job.js  # runPersonalizedNotificationCycle + its scheduler + running-flag
+```
 
-**Auth**: `authenticateToken` middleware (server.js:266) requires `Authorization: Bearer <token>`,
-verifies with `jwt.verify(token, JWT_SECRET)`, and sets `req.authenticatedUser` (JWT payload; user id
-is `.sub`). Apply it per-route as an Express middleware arg — there's no global auth gate, and a few
-routes are intentionally public (see below). Registration hashes passwords with `argon2` and issues
-an email-verification flow: a raw random token is emailed, only its SHA-256 hash is stored in
-`email_verification` (`createEmailVerificationToken`/`createOrReplaceEmailVerification`, server.js:59-105).
-`GET /api/v1/auth/verify-email` renders an HTML landing page (`renderEmailVerificationPage`,
-server.js:166), not JSON — it's meant to be opened directly from the emailed link.
+Each module follows the same layering: `<module>.routes.js` (declares path/method/middleware) →
+`<module>.controller.js` (parses `req`, calls the service, calls `sendSuccess`/`sendError`, wrapped in
+`asyncHandler` so a rejected promise reaches the error middleware without a manual `try/catch`) →
+`<module>.service.js` (orchestrates, throws `AppError(statusCode, message, data)` for expected error
+conditions) → `<module>.repository.js` (SQL literal, receives a pool or a transaction client, returns
+raw `pg` rows). `auth` additionally has `auth.schema.js` (request-shape validation, returning
+`{ ok: true, value }` or `{ ok: false, statusCode, message }`) and `templates/` for its two rendered
+HTML pieces (`verificationEmail.js`, `verificationPage.js`). To find or change an endpoint, go to its
+module folder under `src/modules/` rather than searching a single file.
+
+**Data access**: raw `pg` `Pool` (`src/config/database.js`), no ORM/query builder. SQL is written
+literally in each repository as tagged template strings against `public.<table>` qualified names,
+with `$1`/`$2`… placeholders — copied verbatim from the pre-modularization code, not rewritten.
+Multi-step writes (e.g. recommendation training, checkout) explicitly `BEGIN`/`COMMIT`/`ROLLBACK` on a
+checked-out client via `pool.connect()` in the service layer — follow that pattern for any new
+multi-statement transaction instead of relying on autocommit per query.
+
+**Auth**: `authenticateToken` middleware (`src/shared/middlewares/authenticateToken.js`) requires
+`Authorization: Bearer <token>`, verifies with `jwt.verify(token, JWT_SECRET)`, and sets
+`req.authenticatedUser` (JWT payload; user id is `.sub`). Apply it per-route in each module's
+`*.routes.js` — there's no global auth gate, and a few routes are intentionally public (see below).
+Registration hashes passwords with `argon2` and issues an email-verification flow: a raw random token
+is emailed, only its SHA-256 hash is stored in `email_verification`
+(`createOrReplaceEmailVerification` in `src/modules/auth/auth.repository.js`).
+`GET /api/v1/auth/verify-email` renders an HTML landing page
+(`renderEmailVerificationPage` in `src/modules/auth/templates/verificationPage.js`), not JSON — it's
+meant to be opened directly from the emailed link.
 `POST /api/v1/auth/login` also returns `data.user.userType` (the `public."user".user_type` column,
 `1` or `2`) — used by `fan-engagement-web` to gate its Dashboard tab/route to `userType === 2`. The
 signed JWT itself is unchanged (`sub`/`username`/`email` only); `userType` travels only in the login
@@ -61,15 +102,19 @@ This field is **web-exclusive**: `fan-engagement-android` must never send it, si
 typically `userType 1` and would otherwise be locked out of the app.
 
 **Response envelope**: every route responds via `sendSuccess(res, req, { statusCode, message, data })`
-or `sendError(res, req, { statusCode, message, data })` (server.js:230/248). Response shape is always
-`{ code, status, message, timestamp, method, data }`. Always use these helpers for new routes — never
-call `res.json()` directly. `message` strings are user-facing and in Spanish; keep new ones consistent
-in tone (see the `sendError`/`sendSuccess` defaults for register/verify flows as examples).
+or `sendError(res, req, { statusCode, message, data })` (`src/shared/http/response.js`). Response
+shape is always `{ code, status, message, timestamp, method, data }`. Always use these helpers for new
+routes — never call `res.json()` directly. `message` strings are user-facing and in Spanish; keep new
+ones consistent in tone (see the `sendError`/`sendSuccess` defaults for register/verify flows as
+examples).
 
-**Errors**: unmatched routes and thrown errors fall through to the two catch-all handlers at the very
-bottom of the file — a 404 `app.use((req, res) => ...)` then a 4-arg error handler that logs and
-returns a generic 500. New async routes should `try { ... } catch (error) { next(error); }` rather than
-handling/formatting errors inline, so they reach the shared 500 handler.
+**Errors**: unmatched routes and thrown errors fall through to the two catch-alls mounted last in
+`src/app.js` — `notFoundMiddleware` (`src/shared/errors/notFound.middleware.js`, a 404) then
+`errorMiddleware` (`src/shared/errors/error.middleware.js`, a 4-arg handler that logs and returns a
+generic 500, or formats an `AppError` using its own `statusCode`/`message`/`data` if that's what was
+thrown). Controllers are wrapped in `asyncHandler` (`src/shared/http/asyncHandler.js`), so a service
+that simply `throw`s (an `AppError` or otherwise) reaches the error middleware without each controller
+needing its own `try { ... } catch (error) { next(error); }` boilerplate.
 
 **Route groups** (all under `/api/v1`):
 - `auth/*` — register, login, verify-email (public, HTML response), resend-email-verification
@@ -78,8 +123,9 @@ handling/formatting errors inline, so they reach the shared 500 handler.
 - `products/interaction`, `promotions/interaction` — fan engagement tracking (authenticated); this is
   the core product signal the recommender trains on. `products/interaction/all` and
   `promotions/interaction/all` are the paginated/filterable list equivalents and are intentionally
-  **not** authenticated. Both accept the same query params, validated by the shared
-  `parseInteractionListQuery()` helper (server.js, right above these two routes): `username` and
+  **not** authenticated (see `src/modules/interactions/interactions.routes.js`). Both accept the same
+  query params, validated by the shared `parseInteractionListQuery()` helper
+  (`src/shared/validation/listQuery.js`): `username` and
   `productName` (products) / `promotionTitle` (promotions) — free-text `ILIKE '%value%'`, restricted
   to `/^[\p{L}0-9 ._-]{0,100}$/u` (letters incl. accented/ñ, digits, space, `.`/`_`/`-`) — `dateFrom`/
   `dateTo` (`YYYY-MM-DD`, filtering `last_interaction_at` inclusive on both ends), and `page`/
@@ -97,18 +143,22 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   at checkout time; a promotion item's `unit_price` is derived (no stored promotion price column)
   from `AVG(product.price)` over `promotion_product`'s linked products, adjusted by
   `discount_percentage` or by `pay_quantity/buy_quantity`, falling back to `0` if the promotion has no
-  linked products (see the `PROMOTION_UNIT_PRICE_SELECT`/`PROMOTION_UNIT_PRICE_JOIN` constants right
-  before this route group — reused by checkout's cart read). `item_name`/`unit_price`/`line_total` are
-  copied at checkout and never recalculated against the catalog afterward, so a later price or
-  promotion change doesn't alter historical purchases. `GET purchases` is the paginated/filterable
-  global history (web admin) — same paginate-with-`COUNT(*) OVER()` pattern as
-  `products/interaction/all`, reusing `INTERACTION_TEXT_FILTER_REGEX`/`INTERACTION_DATE_REGEX`/
-  `INTERACTION_PAGE_SIZES`, with its own `status` filter (`pending`/`completed`/`cancelled`) validated
-  against `PURCHASE_STATUSES`; `GET purchases/me` is the same paginated shape forced to the
-  authenticated user, **with** each purchase's items inlined (via the shared
-  `fetchPurchaseItemsByPurchaseIds()` helper) to avoid Android needing an N+1 detail call;
+  linked products (see `PROMOTION_UNIT_PRICE_SELECT`/`PROMOTION_UNIT_PRICE_JOIN` in
+  `src/shared/sql/promotionUnitPrice.js` — reused by checkout's cart read in
+  `purchases.repository.js`). `item_name`/`unit_price`/`line_total` are copied at checkout and never
+  recalculated against the catalog afterward, so a later price or promotion change doesn't alter
+  historical purchases. `GET purchases` is the paginated/filterable global history (web admin) — same
+  paginate-with-`COUNT(*) OVER()` pattern as `products/interaction/all`, reusing
+  `INTERACTION_TEXT_FILTER_REGEX`/`INTERACTION_DATE_REGEX`/`INTERACTION_PAGE_SIZES`
+  (`src/shared/validation/patterns.js`), with its own `status` filter
+  (`pending`/`completed`/`cancelled`) validated against `PURCHASE_STATUSES`; `GET purchases/me` is the
+  same paginated shape forced to the authenticated user, **with** each purchase's items inlined (via
+  the shared `fetchPurchaseItemsByPurchaseIds()` helper in `purchases.repository.js`) to avoid Android
+  needing an N+1 detail call;
   `GET purchases/:purchaseId` is the single-purchase detail (`404` if missing), items included, current
   catalog `image`/`categoryName` joined in per item alongside the immutable snapshot fields;
+  (`purchases.routes.js` registers `GET /purchases/me` **before** `GET /purchases/:purchaseId` —
+  reversing that order would make Express match `me` as `:purchaseId`);
   `PATCH purchases/:purchaseId/status` updates `status` and stamps/clears `completed_at`/
   `cancelled_at` accordingly (`404` if missing, `400` if `status` isn't one of the three values). The
   status update is written as `UPDATE ... FROM (SELECT $1::bigint, $2::varchar ...)` rather than
@@ -156,8 +206,9 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   `target: "users"` had exactly one) and to render the full per-recipient breakdown in its detail modal
 - `DELETE notifications/log/:id` — authenticated; deletes one `notification_log` row (and its
   `notification_log_recipient` rows via `ON DELETE CASCADE`); `404` if the id doesn't exist
-- `GET`/`PUT parameters/personalized-notifications` — authenticated; read/write the 6 `parameters`
-  rows driving the personalized notification scheduler below plus the recommender's purchase boost
+- `GET`/`PUT parameters/personalized-notifications` (`src/modules/parameters/`) — authenticated;
+  read/write the 6 `parameters` rows driving the personalized notification scheduler below plus the
+  recommender's purchase boost
   (`data.settings`: `enabled`, `intervalMinutes`, `repeatDays`, `startHour`, `endHour`,
   `purchaseSignalWeight`). `PUT` validates ranges (`intervalMinutes` 1-1440, `repeatDays` 0-365,
   `startHour` 0-23, `endHour` 1-24, `startHour < endHour`, `purchaseSignalWeight` 0-10) and `400`s via
@@ -171,7 +222,10 @@ handling/formatting errors inline, so they reach the shared 500 handler.
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.
   `{ skipped: true }` if a cycle is already running, same criterion as `/recommendations/train`.
 
-**Personalized notifications**: `startPersonalizedNotificationScheduler()` mirrors
+**Personalized notifications**: both the cycle function and its scheduler live together in
+`src/jobs/personalizedNotifications.job.js` (per spec 08, so the module and its in-memory
+`isPersonalizedNotificationCycleRunning` flag share the same closure).
+`startPersonalizedNotificationScheduler()` mirrors
 `startCollaborativeFilteringTrainingScheduler()` exactly — first fire 20s after boot (offset from the
 training scheduler's 10s so they don't collide), then re-reads
 `personalized_notification_interval_minutes` from `parameters` after every cycle to reschedule. Each
@@ -191,7 +245,12 @@ users with a non-null `fcm_token` whose selected product hasn't been sent to the
 now means a system-originated send; the web's `/notifications` tab renders that as
 "Sistema (automático)".
 
-**Recommendations engine**: `trainCollaborativeFiltering()` runs product- and promotion-level
+**Recommendations engine**: like the personalized-notifications job, `trainCollaborativeFiltering()`,
+`trainProductRecommendations()`/`trainPromotionRecommendations()`,
+`startCollaborativeFilteringTrainingScheduler()`, and the `isCollaborativeFilteringTrainingRunning`
+flag all live together in `src/jobs/collaborativeFiltering.job.js` (per spec 08); the `recommendations`
+module's `POST /recommendations/train` route just calls into this job.
+`trainCollaborativeFiltering()` runs product- and promotion-level
 collaborative filtering in-process against interaction **and purchase** data
 (`trainProductRecommendations`/`trainPromotionRecommendations`) inside a single transaction, writing
 to `user_product_recommendation` / `user_promotion_recommendation`. Each of those two functions
@@ -203,15 +262,16 @@ purchased (user, product) pair — the `FULL OUTER JOIN` is what lets a purchase
 interaction still enter the similarity matrix, with `rating` equal to just the purchase weight. This
 signal CTE replaces `user_product_interaction`/`user_promotion_interaction` in all three places the
 old query referenced them (`upi_a`, `upi_b`, the outer `upi` in `user_candidate_recommendation`) — the
-similarity/ranking SQL itself is unchanged. A global `isCollaborativeFilteringTrainingRunning` flag
+similarity/ranking SQL itself is unchanged. The `isCollaborativeFilteringTrainingRunning` flag
 prevents overlapping runs. In addition to the manual `POST /api/v1/recommendations/train` trigger,
-`startCollaborativeFilteringTrainingScheduler()` (called from `app.listen`'s callback) self-schedules
-on a loop via `setTimeout`, first firing 10s after boot, then re-reading the interval from a DB-stored
-parameter (`getIntegerParameter("collaborative_filtering_training_interval_minutes", 10)`) after every
-run — so the interval can be changed at runtime by updating that DB row, no redeploy needed.
+`startCollaborativeFilteringTrainingScheduler()` (called from `server.js`'s `app.listen` callback)
+self-schedules on a loop via `setTimeout`, first firing 10s after boot, then re-reading the interval
+from a DB-stored parameter (`getIntegerParameter(pool, "collaborative_filtering_training_interval_minutes",
+10)`, from `src/modules/parameters/parameters.repository.js`) after every run — so the interval can be
+changed at runtime by updating that DB row, no redeploy needed.
 
-**Health/root**: `GET /` returns plain text (not the JSON envelope) — deliberate, per the comment
-directly above it in server.js. `GET /api/v1/health` does a DB round-trip check.
+**Health/root**: `GET /` (`src/modules/health/health.controller.js`) returns plain text (not the JSON
+envelope) — deliberate. `GET /api/v1/health` does a DB round-trip check.
 
 Deployed at `https://fan-engagement-api-production.up.railway.app` on Railway; this URL is hardcoded
 into both client apps (`fan-engagement-web`, `fan-engagement-android`), so a route path or response
