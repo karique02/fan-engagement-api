@@ -7,14 +7,17 @@
 # Variables de entorno:
 #   BASE_URL      default http://localhost:3000
 #   OUT_DIR       default ./out
-#   TOKEN_ADMIN   si no viene seteado, se genera haciendo login real
-#   TOKEN_FAN     si no viene seteado, se genera haciendo login real
-#   ADMIN_IDENTIFIER / ADMIN_PASSWORD  identidad admin para el login (si hace falta generar TOKEN_ADMIN)
-#   FAN_IDENTIFIER   / FAN_PASSWORD    identidad fan para el login (si hace falta generar TOKEN_FAN)
+#   TOKEN_ADMIN   token ya generado (evita el login de abajo)
+#   TOKEN_FAN     token ya generado (evita el login de abajo)
+#   ADMIN_IDENTIFIER / ADMIN_PASSWORD  identidad admin para el login (obligatorias si no viene TOKEN_ADMIN)
+#   FAN_IDENTIFIER   / FAN_PASSWORD    identidad fan para el login (obligatorias si no viene TOKEN_FAN)
 #
-# No se fabrican usuarios "de negocio": el único registro que crea este
-# script es una cuenta de prueba desechable para ejercitar POST auth/register,
-# con un sufijo aleatorio en cada corrida.
+# Ninguna credencial tiene valor por defecto: sin TOKEN_ADMIN/TOKEN_FAN ya
+# generados, o sin las 4 variables ADMIN_IDENTIFIER/ADMIN_PASSWORD/
+# FAN_IDENTIFIER/FAN_PASSWORD, el script aborta en vez de asumir un usuario
+# o contraseña. No se fabrican usuarios "de negocio": el único registro que
+# crea este script es una cuenta de prueba desechable para ejercitar
+# POST auth/register, con un sufijo aleatorio en cada corrida.
 
 set -uo pipefail
 
@@ -59,13 +62,19 @@ login() {
         -d "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).data.accessToken||'')}catch(e){console.log('')}})"
 }
 
+if [ -z "${ADMIN_IDENTIFIER:-}" ] || [ -z "${ADMIN_PASSWORD:-}" ] || \
+   [ -z "${FAN_IDENTIFIER:-}" ] || [ -z "${FAN_PASSWORD:-}" ]; then
+    echo "Faltan ADMIN_IDENTIFIER/ADMIN_PASSWORD/FAN_IDENTIFIER/FAN_PASSWORD. Ninguna tiene valor por defecto. Aborta." >&2
+    exit 1
+fi
+
 if [ -z "${TOKEN_ADMIN:-}" ]; then
     echo "Generando TOKEN_ADMIN vía login real..."
-    TOKEN_ADMIN=$(login "${ADMIN_IDENTIFIER}" "${ADMIN_PASSWORD}" "web")
+    TOKEN_ADMIN=$(login "$ADMIN_IDENTIFIER" "$ADMIN_PASSWORD" "web")
 fi
 if [ -z "${TOKEN_FAN:-}" ]; then
     echo "Generando TOKEN_FAN vía login real..."
-    TOKEN_FAN=$(login "${FAN_IDENTIFIER}" "${FAN_PASSWORD}")
+    TOKEN_FAN=$(login "$FAN_IDENTIFIER" "$FAN_PASSWORD")
 fi
 
 if [ -z "$TOKEN_ADMIN" ] || [ -z "$TOKEN_FAN" ]; then
