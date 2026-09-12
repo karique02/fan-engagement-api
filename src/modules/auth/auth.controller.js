@@ -54,7 +54,7 @@ const register = asyncHandler(async (req, res) => {
  *
  * O:
  * {
- *   "identifier": "kariquekeiter@gmail.com",
+ *   "identifier": "usuario@example.com",
  *   "password": "..."
  * }
  */
