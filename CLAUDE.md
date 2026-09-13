@@ -57,9 +57,10 @@ src/
     cart/                  # 6 shopping cart routes
     purchases/             # checkout + history routes, fetchPurchaseItemsByPurchaseIds
     notifications/         # send, log, delete log, personalized/run
-    parameters/            # GET|PUT personalized-notifications, getIntegerParameter()
+    parameters/            # GET|PUT personalized-notifications, GET|PUT free-membership, getIntegerParameter()/getBooleanParameter()
     recommendations/       # train (delegates to the CF job), products/promotions recommendations
     dashboard/             # GET /dashboard/engagement
+    membership/            # GET /membership/me, POST /membership/trial, GET /membership/promotions
   jobs/
     collaborativeFiltering.job.js     # trainCollaborativeFiltering + its scheduler + running-flag
     personalizedNotifications.job.js  # runPersonalizedNotificationCycle + its scheduler + running-flag
@@ -219,6 +220,34 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   current one is already scheduled) — same behavior as the CF training interval below. The endpoint's
   path/name stayed as-is (not renamed to something recommender-related) specifically so the existing
   web client didn't need a route change for this one extra field.
+- `GET`/`PUT parameters/free-membership` (`src/modules/parameters/`) — authenticated; read/write the
+  single `free_membership_notice_enabled` parameter (`data.settings: { noticeEnabled }`) that controls
+  whether Android's Home shows the free-trial membership highlight card to a fan without an active
+  membership. Uses the new `getBooleanParameter(pool, key, defaultValue)` in
+  `parameters.repository.js`, added alongside `getIntegerParameter` (not touching it) because
+  `getIntegerParameter` has a known bug that discards `0` (`parameters.repository.js`, `parsedValue <=
+  0` falls back to the default) — no boolean flag modeled through it can ever be turned off.
+  `getBooleanParameter` reads `'1'`/`'0'` literally, `0` included.
+- `membership/*` (`src/modules/membership/`) — authenticated. `GET membership/me` resolves the
+  authenticated user's membership status from `user_membership` (no `status` column — validity is
+  derived as `ends_at > now()` on the most recent row per user, no expiry job) plus
+  `free_membership_notice_enabled`: `{ isMember, source, startedAt, endsAt, daysRemaining,
+  trialAvailable, noticeEnabled }`. `trialAvailable` is `true` only if the user has never inserted a
+  `source = 'trial'` row (a partial unique index, `uq_user_membership_trial`, enforces one trial per
+  user at the DB level). `POST membership/trial` inserts a `source = 'trial'` row with `ends_at = now()
+  + 1 month`; `409`s with `data.reason = 'trial_already_used'` if a trial row already exists (checked
+  in the service before insert, for a clear message — the unique index is the actual guarantee).
+  `GET membership/promotions` lists `member_promotion WHERE active = true`, each item annotated with
+  `locked: true` when the authenticated user has no membership row with `ends_at > now()`.
+  `member_promotion` is a table entirely separate from `promotion` (by explicit product decision): it
+  has no relation to `promotion_category` or `user_promotion_interaction`, so member-only promotions
+  never enter the collaborative filtering job or `GET /promotions`/`GET /promotions/recommendations`
+  without any extra `WHERE` clause in those existing queries. Seeded with 4 invented-but-club-coherent
+  rows reusing image URLs already present in `public.image` — documented here as demo data, not real
+  club promotions. Renewing membership after the trial expires reuses the existing `POST
+  /api/v1/purchases` flow against product id 15 (`'Membresía Oficial'`, already a normal catalog
+  product) — there is no automatic link from a completed purchase to a new `user_membership(source =
+  'paid')` row; an admin has to create that manually today (out of scope, see spec 13's Riesgos).
 - `POST notifications/personalized/run` — authenticated; runs
   `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.

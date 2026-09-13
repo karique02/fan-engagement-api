@@ -22,4 +22,27 @@ const putPersonalizedNotifications = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { getPersonalizedNotifications, putPersonalizedNotifications };
+const getFreeMembership = asyncHandler(async (req, res) => {
+    const settings = await service.getFreeMembershipSettings();
+
+    return sendSuccess(res, req, {
+        message: "Configuración obtenida exitosamente",
+        data: { settings },
+    });
+});
+
+const putFreeMembership = asyncHandler(async (req, res) => {
+    const settings = await service.updateFreeMembershipSettings(req.body ?? {});
+
+    return sendSuccess(res, req, {
+        message: "Configuración actualizada exitosamente",
+        data: { settings },
+    });
+});
+
+module.exports = {
+    getPersonalizedNotifications,
+    putPersonalizedNotifications,
+    getFreeMembership,
+    putFreeMembership,
+};
