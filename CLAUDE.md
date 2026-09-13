@@ -31,6 +31,20 @@ below.
 is disabled. SMTP is Gmail specifically (`nodemailer.createTransport({ service: "gmail", ... })`),
 using `SMTP_USER`/`SMTP_PASS` as Gmail app-credentials.
 
+The `pg` Pool (`src/config/database.js`) sets `options: "-c timezone=America/Lima"`, forcing every
+connection's Postgres session `TimeZone` GUC to `America/Lima` instead of the server/cloud default
+(typically UTC on Railway) — backend-only, no schema change. This matters for more than display: most
+`timestamp with time zone` columns store an absolute instant and are unaffected either way, but
+`promotion.deadline` is `timestamp without time zone`, and comparisons like `cart.repository.js`'s
+`pr.deadline < CURRENT_TIMESTAMP` implicitly interpret that naive timestamp using the session's
+`TimeZone` to convert it to an instant — without this setting (session defaulting to UTC), a deadline
+entered as Lima wall-clock time was being read 5 hours off. Also fixes any `::text`/`to_char(...)`
+timestamp formatting done in SQL to render as Lima time instead of UTC. Does **not** affect the
+response envelope's `timestamp` field (`src/shared/http/response.js`, `new Date().toISOString()`) —
+that's JS-side and always UTC `Z`, a separate concern from DB session timezone. Also does not change
+what a DB client with its own separate session (e.g. pgAdmin) displays — that's governed by that
+client's own connection settings, not this pool's.
+
 ## Architecture
 
 Modular by feature (spec 08). `server.js` at the repo root is ~10 lines: it requires `src/app.js`,
