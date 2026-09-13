@@ -111,6 +111,14 @@ async function login({ identifier, password, client: loginClient }) {
         );
     }
 
+    if (loginClient === "android" && Number(user.user_type) !== 1) {
+        throw new AppError(
+            403,
+            "Esta cuenta no tiene acceso a la aplicación móvil. Si sos administrador, ingresá desde la web.",
+            { reason: "not_fan" },
+        );
+    }
+
     const token = jwt.sign(
         {
             sub: user.id,
