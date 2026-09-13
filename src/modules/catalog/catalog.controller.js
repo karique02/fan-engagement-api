@@ -12,7 +12,7 @@ const listProducts = asyncHandler(async (req, res) => {
 });
 
 const listPromotions = asyncHandler(async (req, res) => {
-    const promotions = await service.listPromotions();
+    const promotions = await service.listPromotions(req.authenticatedUser.sub);
 
     return sendSuccess(res, req, {
         message: "Promociones recuperadas exitosamente",

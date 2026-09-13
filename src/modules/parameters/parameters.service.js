@@ -163,35 +163,18 @@ async function updateFreeMembershipSettings({ noticeEnabled }) {
 }
 
 async function getFreeShippingNoticeSettings() {
-    const [enabled, intervalDays, startHour, endHour] = await Promise.all([
+    const [enabled, startHour, endHour] = await Promise.all([
         repository.getBooleanParameter(pool, "free_shipping_notice_enabled", true),
-        repository.getIntegerParameter(
-            pool,
-            "free_shipping_notice_interval_days",
-            14,
-        ),
         repository.getIntegerParameter(pool, "free_shipping_notice_start_hour", 9),
         repository.getIntegerParameter(pool, "free_shipping_notice_end_hour", 21),
     ]);
 
-    return { enabled, intervalDays, startHour, endHour };
+    return { enabled, startHour, endHour };
 }
 
-async function updateFreeShippingNoticeSettings({
-    enabled,
-    intervalDays,
-    startHour,
-    endHour,
-}) {
+async function updateFreeShippingNoticeSettings({ enabled, startHour, endHour }) {
     if (typeof enabled !== "boolean") {
         throw new AppError(400, "El campo 'enabled' debe ser un booleano");
-    }
-
-    if (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365) {
-        throw new AppError(
-            400,
-            "El campo 'intervalDays' debe ser un entero entre 1 y 365",
-        );
     }
 
     if (!Number.isInteger(startHour) || startHour < 0 || startHour > 23) {
@@ -216,7 +199,6 @@ async function updateFreeShippingNoticeSettings({
 
         const entries = [
             ["free_shipping_notice_enabled", enabled ? "1" : "0"],
-            ["free_shipping_notice_interval_days", String(intervalDays)],
             ["free_shipping_notice_start_hour", String(startHour)],
             ["free_shipping_notice_end_hour", String(endHour)],
         ];
@@ -233,7 +215,7 @@ async function updateFreeShippingNoticeSettings({
         client.release();
     }
 
-    return { enabled, intervalDays, startHour, endHour };
+    return { enabled, startHour, endHour };
 }
 
 module.exports = {
