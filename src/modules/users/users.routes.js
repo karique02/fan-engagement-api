@@ -14,6 +14,7 @@ router.delete(
     authenticateToken,
     controller.deleteFcmToken,
 );
+router.get("/api/v1/users/fans", authenticateToken, controller.listFans);
 router.get("/api/v1/users", authenticateToken, controller.listUsers);
 
 module.exports = router;

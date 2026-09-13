@@ -1,4 +1,5 @@
 const pool = require("../../config/database");
+const AppError = require("../../shared/errors/AppError");
 const repository = require("./dashboard.repository");
 
 /*
@@ -128,4 +129,122 @@ async function getEngagement() {
     };
 }
 
-module.exports = { getEngagement };
+/*
+ * Protegido.
+ *
+ * Métricas agregadas de fan engagement de un fan específico: KPIs propios,
+ * actividad 30 días, embudo interacción -> compra, sus recomendaciones y
+ * sus top ítems. 404 si userId no es un fan (user_type = 1) existente.
+ */
+async function getUserEngagement(userId) {
+    const fan = await repository.fetchFanById(pool, userId);
+
+    if (!fan) {
+        throw new AppError(404, "No se encontró el fan solicitado");
+    }
+
+    const [
+        productInteractionTotalsResult,
+        promotionInteractionTotalsResult,
+        lastActivityResult,
+        activityResult,
+        funnelRawResult,
+        recommendedProductsResult,
+        recommendedPromotionsResult,
+        topProductsResult,
+        topPromotionsResult,
+    ] = await repository.fetchUserEngagementRawData(pool, userId);
+
+    const productInteractions = Number(
+        productInteractionTotalsResult.rows[0].total_interactions,
+    );
+    const promotionInteractions = Number(
+        promotionInteractionTotalsResult.rows[0].total_interactions,
+    );
+
+    const lastActivityAtRaw = lastActivityResult.rows[0].last_activity_at;
+    const lastActivityAt =
+        lastActivityAtRaw instanceof Date
+            ? lastActivityAtRaw.toISOString()
+            : null;
+
+    const activityDays = activityResult.rows.map((row) => ({
+        date: row.day.toISOString().slice(0, 10),
+        interactions: Number(row.interactions),
+    }));
+
+    const funnelRow = funnelRawResult.rows[0];
+    const interactionCount = Number(funnelRow.interaction_count);
+    const purchaseCount = Number(funnelRow.purchase_count);
+    const purchasedItems = Number(funnelRow.purchased_items);
+    const purchasedAmount = Number(funnelRow.purchased_amount);
+
+    const recommendedProducts = recommendedProductsResult.rows.map((row) => ({
+        id: Number(row.id),
+        name: row.name,
+        categoryName: row.category_name,
+        score: Number(row.score),
+    }));
+
+    const recommendedPromotions = recommendedPromotionsResult.rows.map(
+        (row) => ({
+            id: Number(row.id),
+            title: row.title,
+            categoryName: row.category_name,
+            score: Number(row.score),
+        }),
+    );
+
+    const topProducts = topProductsResult.rows.map((row) => ({
+        id: Number(row.id),
+        name: row.name,
+        categoryName: row.category_name,
+        interactionCount: Number(row.interaction_count),
+        rating: Number(row.rating),
+    }));
+
+    const topPromotions = topPromotionsResult.rows.map((row) => ({
+        id: Number(row.id),
+        title: row.title,
+        categoryName: row.category_name,
+        interactionCount: Number(row.interaction_count),
+        rating: Number(row.rating),
+    }));
+
+    return {
+        user: {
+            id: fan.id,
+            username: fan.username,
+            fullName: fan.fullName,
+        },
+        kpis: {
+            productInteractions,
+            promotionInteractions,
+            totalInteractions: productInteractions + promotionInteractions,
+            averageProductRating: Number(
+                productInteractionTotalsResult.rows[0].average_rating,
+            ),
+            averagePromotionRating: Number(
+                promotionInteractionTotalsResult.rows[0].average_rating,
+            ),
+            purchases: purchaseCount,
+            purchasedAmount,
+            lastActivityAt,
+        },
+        activity: {
+            days: activityDays,
+        },
+        funnel: {
+            hasInteraction: interactionCount > 0,
+            hasPurchase: purchaseCount > 0,
+            purchasedItems,
+            purchasedAmount,
+        },
+        recommendedProducts,
+        recommendedPromotions,
+        topProducts,
+        topPromotions,
+    };
+}
+
+module.exports = { getEngagement, getUserEngagement };

@@ -50,4 +50,25 @@ async function listUsers(pool) {
     return result.rows;
 }
 
-module.exports = { updateFcmToken, clearFcmToken, listUsers };
+async function listFans(pool, { search, pageSize, offset }) {
+    const result = await pool.query(
+        `
+            SELECT
+                id::integer AS id,
+                username,
+                email,
+                full_name AS "fullName",
+                COUNT(*) OVER() AS "totalItems"
+            FROM public."user"
+            WHERE user_type = 1
+              AND ($1::text IS NULL OR username ILIKE $1 OR email ILIKE $1 OR full_name ILIKE $1)
+            ORDER BY username ASC
+            LIMIT $2 OFFSET $3;
+        `,
+        [search ?? null, pageSize, offset],
+    );
+
+    return result.rows;
+}
+
+module.exports = { updateFcmToken, clearFcmToken, listUsers, listFans };

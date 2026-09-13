@@ -193,11 +193,39 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   counts as converted; `pending` **and** `completed` both count, only `cancelled` doesn't) — it no
   longer looks at `shopping_cart`/`shopping_cart_item` at all, so there is no cart-based funnel
   fallback if `purchase` is empty
+- `dashboard/engagement/user/:userId` (spec 17) — authenticated; per-fan mirror of the block above,
+  entirely separate from it (`fetchEngagementRawData` above is untouched). `:userId` must be a
+  positive integer resolving to a `public."user"` row with `user_type = 1`, else `404` via `AppError`
+  (an admin id, or any nonexistent id, both 404). `fetchFanById`/`fetchUserEngagementRawData` in
+  `dashboard.repository.js` run everything `WHERE user_id = $1` (or `WHERE ... AND user_id = $1` for
+  the funnel/purchase queries): product/promotion interaction totals+avg rating, last activity
+  (`GREATEST` of both interaction tables' `MAX(last_interaction_at)`, defaulting to
+  `'-infinity'::timestamptz` — node-postgres parses that as the JS value `-Infinity`, not a `Date`, so
+  the service checks `instanceof Date` rather than truthiness to decide `lastActivityAt: null`), the
+  same 30-day `generate_series` activity shape as the global endpoint but per-user and without
+  `activeFans` (not meaningful for one user), the funnel (`hasInteraction`/`hasPurchase` booleans
+  instead of counts, since it's one fan), top-5 recommendations and top-5 interacted items per
+  product/promotion. Response `data` shape: `{ user: { id, username, fullName }, kpis: {
+  productInteractions, promotionInteractions, totalInteractions, averageProductRating,
+  averagePromotionRating, purchases, purchasedAmount, lastActivityAt }, activity: { days: [{ date,
+  interactions }] (always 30) }, funnel: { hasInteraction, hasPurchase, purchasedItems,
+  purchasedAmount }, recommendedProducts, recommendedPromotions, topProducts, topPromotions }`. Does
+  not read/affect the global `GET /dashboard/engagement`, its top-5 rankings, or recommender health —
+  those stay global by explicit product decision (spec 17).
 - `users` — authenticated; lists all users (`id`, `username`, `email`, `hasFcmToken`), used by the
   web's Notifications tab to populate its recipient autocomplete. `id` is explicitly cast
   (`id::integer`) in the query — `pg` returns `bigint` columns as strings by default, and this `id`
   round-trips back into `POST /notifications/send`'s `userIds` body, which validates with
   `Number.isInteger`; without the cast every send to specific users 400s
+- `users/fans` — authenticated; registered in `users.routes.js` **before** `GET /users` (spec 17
+  convention — no dynamic-param routes exist in this module yet, but keep new static routes above it
+  regardless). Paginated/filterable list of `user_type = 1` rows only (`id`, `username`, `email`,
+  `fullName`), for the web dashboard's fan search/picker (spec 17) — does not touch `GET /users`,
+  which keeps feeding the Notifications autocomplete unchanged. Query params: `search` (`ILIKE` on
+  `username`/`email`/`full_name`, validated with `INTERACTION_TEXT_FILTER_REGEX`), `page` (default
+  `1`), `pageSize` (`INTERACTION_PAGE_SIZES`, default `15`) — same paginate-with-`COUNT(*) OVER()`
+  pattern as `purchases.service.js`'s `listPurchases`, `AppError(400, …)` for an invalid `search`.
+  Response `data`: `{ fans: [...], pagination: { page, pageSize, totalItems, totalPages } }`.
 - `images` — authenticated; lists `public.image` rows (`id`, `url`, `sourceType`, `sourceId`), used
   by the web's Notifications tab image picker. One-time seeded with a manual `INSERT ... SELECT
   DISTINCT ... ON CONFLICT (url) DO NOTHING` per source table, copying the distinct URLs already in
