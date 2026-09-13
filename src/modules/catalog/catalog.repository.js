@@ -17,8 +17,9 @@ async function listProducts(pool) {
     return result.rows;
 }
 
-async function listPromotions(pool) {
-    const result = await pool.query(`
+async function listPromotions(pool, { isFreeShippingVisible }) {
+    const result = await pool.query(
+        `
         SELECT
             p.id,
             p.title,
@@ -33,8 +34,11 @@ async function listPromotions(pool) {
         FROM public.promotion p
         INNER JOIN public.promotion_category pc
             ON pc.id = p.promotion_category_id
+        WHERE p.promotion_category_id <> 3 OR $1 = true
         ORDER BY p.id;
-    `);
+    `,
+        [isFreeShippingVisible],
+    );
 
     return result.rows;
 }

@@ -28,7 +28,7 @@ async function listProductRecommendations(pool, userId) {
     return result.rows;
 }
 
-async function listPromotionRecommendations(pool, userId) {
+async function listPromotionRecommendations(pool, userId, { isFreeShippingVisible }) {
     const result = await pool.query(
         `
             SELECT
@@ -49,12 +49,13 @@ async function listPromotionRecommendations(pool, userId) {
             INNER JOIN public.promotion_category pc
                 ON pc.id = pr.promotion_category_id
             WHERE upr.user_id = $1
+                AND (pr.promotion_category_id <> 3 OR $2 = true)
             ORDER BY
                 upr.recommendation_score DESC,
                 pr.id ASC
             LIMIT 30;
         `,
-        [userId],
+        [userId, isFreeShippingVisible],
     );
 
     return result.rows;

@@ -263,16 +263,39 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   product) — there is no automatic link from a completed purchase to a new `user_membership(source =
   'paid')` row; an admin has to create that manually today (out of scope, see spec 13's Riesgos).
 - `GET`/`PUT parameters/free-shipping-notice` (`src/modules/parameters/`) — authenticated; read/write
-  the 4 `parameters` rows driving Android's periodic free-shipping banner on Home (spec 14):
-  `free_shipping_notice_enabled` (`getBooleanParameter`, default `true`),
-  `free_shipping_notice_interval_days` (default `14`), `free_shipping_notice_start_hour` (default
-  `9`), `free_shipping_notice_end_hour` (default `21`) — `data.settings: { enabled, intervalDays,
-  startHour, endHour }`. `PUT` validates the same shape as `personalized-notifications`
-  (`intervalDays` 1-365, `startHour` 0-23, `endHour` 1-24, `startHour < endHour`) and persists with
-  the same transaction + upsert-per-key pattern. This endpoint replaces the fixed promotion
-  `id = 4` ("Envío Gratis por Mochila Oficial"), deleted from `public.promotion` — the banner is
-  purely informational (Home-only, no checkout/shipping-cost logic anywhere in the schema) and the
-  web only manages these parameters, it doesn't render the banner itself.
+  the 3 `parameters` rows deciding server-side visibility of the free-shipping promotion (spec 15,
+  correcting spec 14): `free_shipping_notice_enabled` (`getBooleanParameter`, default `true`),
+  `free_shipping_notice_start_hour` (default `9`), `free_shipping_notice_end_hour` (default `21`) —
+  `data.settings: { enabled, startHour, endHour }`. There is no `intervalDays`/"cada cuántos días
+  reaparece" concept anymore — spec 14 stored that per-device on Android, which meant every fan saw
+  the banner at a different time; spec 15 dropped it entirely in favor of one enabled+hour-window
+  decision that's the same for every fan. `PUT` validates `startHour` 0-23, `endHour` 1-24,
+  `startHour < endHour`, and persists with the same transaction + upsert-per-key pattern as
+  `personalized-notifications`. `src/shared/promotions/freeShippingVisibility.js`
+  (`isFreeShippingPromotionVisible(pool)`) reads these 3 parameters plus the current hour in
+  `America/Lima` (same `Intl.DateTimeFormat` pattern as `personalizedNotifications.job.js`) and
+  returns whether the promotion should be visible right now; `catalog.repository.js`'s
+  `listPromotions()` and `recommendations.repository.js`'s `listPromotionRecommendations()` both take
+  this flag and filter out `promotion_category_id = 3` ("Free Shipping", exclusive to this one
+  promotion) unless it's `true` — same criterion, same result, for every fan hitting either endpoint.
+  On top of that global flag, `hasUserPurchasedFreeShippingPromotion(pool, userId)` (same file) is a
+  **per-user** exception (post-spec-15, added on explicit request): a fan with any non-cancelled
+  purchase of this promotion stops seeing it, in both endpoints — `catalog.service.js`'s
+  `listPromotions(userId)` and `recommendations.service.js`'s `listPromotionRecommendations(userId)`
+  AND this into the global flag before calling the repository, so the repository query itself is
+  unchanged, it just receives `false` for a fan who already bought it. This is why
+  `GET /api/v1/promotions` (`catalog.controller.js`) now reads `req.authenticatedUser.sub` and passes
+  it to the service — it used to ignore the authenticated user entirely.
+  Free shipping is a real, purchasable promotion again: `public.promotion` row `id = 4`
+  ("Envío gratis por tiempo limitado"), `promotion_category_id = 3`, **no** row in
+  `promotion_product` — it doesn't depend on any catalog product. Its price comes from the new
+  `promotion.fixed_price` column (`50.00` here) instead of the usual `AVG(product.price)` derivation:
+  `PROMOTION_UNIT_PRICE_SELECT` (`src/shared/sql/promotionUnitPrice.js`) now checks `fixed_price`
+  first, before `discount_percentage`/`buy_quantity`/`pay_quantity` — those other three still assume
+  a `promotion_product` row and are unchanged for every other promotion. `fixed_price` is meant only
+  for a promotion with no linked products; nothing enforces that beyond convention (the `CHECK` just
+  requires `fixed_price IS NULL OR fixed_price > 0`), so a promotion with both `fixed_price` **and**
+  `promotion_product` rows would have `fixed_price` win silently.
 - `POST notifications/personalized/run` — authenticated; runs
   `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.
