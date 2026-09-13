@@ -248,6 +248,17 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   /api/v1/purchases` flow against product id 15 (`'Membresía Oficial'`, already a normal catalog
   product) — there is no automatic link from a completed purchase to a new `user_membership(source =
   'paid')` row; an admin has to create that manually today (out of scope, see spec 13's Riesgos).
+- `GET`/`PUT parameters/free-shipping-notice` (`src/modules/parameters/`) — authenticated; read/write
+  the 4 `parameters` rows driving Android's periodic free-shipping banner on Home (spec 14):
+  `free_shipping_notice_enabled` (`getBooleanParameter`, default `true`),
+  `free_shipping_notice_interval_days` (default `14`), `free_shipping_notice_start_hour` (default
+  `9`), `free_shipping_notice_end_hour` (default `21`) — `data.settings: { enabled, intervalDays,
+  startHour, endHour }`. `PUT` validates the same shape as `personalized-notifications`
+  (`intervalDays` 1-365, `startHour` 0-23, `endHour` 1-24, `startHour < endHour`) and persists with
+  the same transaction + upsert-per-key pattern. This endpoint replaces the fixed promotion
+  `id = 4` ("Envío Gratis por Mochila Oficial"), deleted from `public.promotion` — the banner is
+  purely informational (Home-only, no checkout/shipping-cost logic anywhere in the schema) and the
+  web only manages these parameters, it doesn't render the banner itself.
 - `POST notifications/personalized/run` — authenticated; runs
   `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.

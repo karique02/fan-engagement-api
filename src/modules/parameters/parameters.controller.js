@@ -40,9 +40,29 @@ const putFreeMembership = asyncHandler(async (req, res) => {
     });
 });
 
+const getFreeShippingNotice = asyncHandler(async (req, res) => {
+    const settings = await service.getFreeShippingNoticeSettings();
+
+    return sendSuccess(res, req, {
+        message: "Configuración obtenida exitosamente",
+        data: { settings },
+    });
+});
+
+const putFreeShippingNotice = asyncHandler(async (req, res) => {
+    const settings = await service.updateFreeShippingNoticeSettings(req.body ?? {});
+
+    return sendSuccess(res, req, {
+        message: "Configuración actualizada exitosamente",
+        data: { settings },
+    });
+});
+
 module.exports = {
     getPersonalizedNotifications,
     putPersonalizedNotifications,
     getFreeMembership,
     putFreeMembership,
+    getFreeShippingNotice,
+    putFreeShippingNotice,
 };

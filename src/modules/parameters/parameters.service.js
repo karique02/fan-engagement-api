@@ -162,9 +162,85 @@ async function updateFreeMembershipSettings({ noticeEnabled }) {
     return { noticeEnabled };
 }
 
+async function getFreeShippingNoticeSettings() {
+    const [enabled, intervalDays, startHour, endHour] = await Promise.all([
+        repository.getBooleanParameter(pool, "free_shipping_notice_enabled", true),
+        repository.getIntegerParameter(
+            pool,
+            "free_shipping_notice_interval_days",
+            14,
+        ),
+        repository.getIntegerParameter(pool, "free_shipping_notice_start_hour", 9),
+        repository.getIntegerParameter(pool, "free_shipping_notice_end_hour", 21),
+    ]);
+
+    return { enabled, intervalDays, startHour, endHour };
+}
+
+async function updateFreeShippingNoticeSettings({
+    enabled,
+    intervalDays,
+    startHour,
+    endHour,
+}) {
+    if (typeof enabled !== "boolean") {
+        throw new AppError(400, "El campo 'enabled' debe ser un booleano");
+    }
+
+    if (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365) {
+        throw new AppError(
+            400,
+            "El campo 'intervalDays' debe ser un entero entre 1 y 365",
+        );
+    }
+
+    if (!Number.isInteger(startHour) || startHour < 0 || startHour > 23) {
+        throw new AppError(
+            400,
+            "El campo 'startHour' debe ser un entero entre 0 y 23",
+        );
+    }
+
+    if (!Number.isInteger(endHour) || endHour < 1 || endHour > 24) {
+        throw new AppError(400, "El campo 'endHour' debe ser un entero entre 1 y 24");
+    }
+
+    if (startHour >= endHour) {
+        throw new AppError(400, "El campo 'startHour' debe ser menor que 'endHour'");
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const entries = [
+            ["free_shipping_notice_enabled", enabled ? "1" : "0"],
+            ["free_shipping_notice_interval_days", String(intervalDays)],
+            ["free_shipping_notice_start_hour", String(startHour)],
+            ["free_shipping_notice_end_hour", String(endHour)],
+        ];
+
+        for (const [key, value] of entries) {
+            await repository.upsertParameter(client, key, value);
+        }
+
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+
+    return { enabled, intervalDays, startHour, endHour };
+}
+
 module.exports = {
     getPersonalizedNotificationSettings,
     updatePersonalizedNotificationSettings,
     getFreeMembershipSettings,
     updateFreeMembershipSettings,
+    getFreeShippingNoticeSettings,
+    updateFreeShippingNoticeSettings,
 };

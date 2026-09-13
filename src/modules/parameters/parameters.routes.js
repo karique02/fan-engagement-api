@@ -24,5 +24,15 @@ router.put(
     authenticateToken,
     controller.putFreeMembership,
 );
+router.get(
+    "/api/v1/parameters/free-shipping-notice",
+    authenticateToken,
+    controller.getFreeShippingNotice,
+);
+router.put(
+    "/api/v1/parameters/free-shipping-notice",
+    authenticateToken,
+    controller.putFreeShippingNotice,
+);
 
 module.exports = router;
