@@ -9,5 +9,10 @@ router.get(
     authenticateToken,
     controller.getEngagement,
 );
+router.get(
+    "/api/v1/dashboard/engagement/user/:userId",
+    authenticateToken,
+    controller.getUserEngagement,
+);
 
 module.exports = router;

@@ -78,4 +78,13 @@ const listUsers = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { putFcmToken, deleteFcmToken, listUsers };
+const listFans = asyncHandler(async (req, res) => {
+    const result = await service.listFans(req.query);
+
+    return sendSuccess(res, req, {
+        message: "Fans recuperados exitosamente",
+        data: result,
+    });
+});
+
+module.exports = { putFcmToken, deleteFcmToken, listUsers, listFans };
