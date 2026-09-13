@@ -6,6 +6,7 @@ const pool = new Pool({
     ssl: env.nodeEnv === "production"
         ? { rejectUnauthorized: false }
         : false,
+    options: "-c timezone=America/Lima",
 });
 
 module.exports = pool;
