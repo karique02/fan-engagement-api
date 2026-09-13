@@ -17,6 +17,7 @@ const cartRoutes = require("./modules/cart/cart.routes");
 const purchasesRoutes = require("./modules/purchases/purchases.routes");
 const notificationsRoutes = require("./modules/notifications/notifications.routes");
 const parametersRoutes = require("./modules/parameters/parameters.routes");
+const membershipRoutes = require("./modules/membership/membership.routes");
 const recommendationsRoutes = require("./modules/recommendations/recommendations.routes");
 const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
 
@@ -35,6 +36,7 @@ app.use(cartRoutes);
 app.use(purchasesRoutes);
 app.use(notificationsRoutes);
 app.use(parametersRoutes);
+app.use(membershipRoutes);
 app.use(recommendationsRoutes);
 app.use(dashboardRoutes);
 

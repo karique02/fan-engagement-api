@@ -22,6 +22,32 @@ async function getIntegerParameter(pool, parameterKey, defaultValue) {
     return parsedValue;
 }
 
+async function getBooleanParameter(pool, parameterKey, defaultValue) {
+    const result = await pool.query(
+        `
+            SELECT value
+            FROM public.parameters
+            WHERE key = $1
+            LIMIT 1;
+        `,
+        [parameterKey],
+    );
+
+    if (result.rowCount === 0) {
+        return defaultValue;
+    }
+
+    if (result.rows[0].value === "1") {
+        return true;
+    }
+
+    if (result.rows[0].value === "0") {
+        return false;
+    }
+
+    return defaultValue;
+}
+
 async function upsertParameter(client, key, value) {
     await client.query(
         `
@@ -35,4 +61,4 @@ async function upsertParameter(client, key, value) {
     );
 }
 
-module.exports = { getIntegerParameter, upsertParameter };
+module.exports = { getIntegerParameter, getBooleanParameter, upsertParameter };

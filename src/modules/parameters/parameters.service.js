@@ -125,7 +125,46 @@ async function updatePersonalizedNotificationSettings({
     };
 }
 
+async function getFreeMembershipSettings() {
+    const noticeEnabled = await repository.getBooleanParameter(
+        pool,
+        "free_membership_notice_enabled",
+        true,
+    );
+
+    return { noticeEnabled };
+}
+
+async function updateFreeMembershipSettings({ noticeEnabled }) {
+    if (typeof noticeEnabled !== "boolean") {
+        throw new AppError(400, "El campo 'noticeEnabled' debe ser un booleano");
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        await repository.upsertParameter(
+            client,
+            "free_membership_notice_enabled",
+            noticeEnabled ? "1" : "0",
+        );
+
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+
+    return { noticeEnabled };
+}
+
 module.exports = {
     getPersonalizedNotificationSettings,
     updatePersonalizedNotificationSettings,
+    getFreeMembershipSettings,
+    updateFreeMembershipSettings,
 };

@@ -14,5 +14,15 @@ router.put(
     authenticateToken,
     controller.putPersonalizedNotifications,
 );
+router.get(
+    "/api/v1/parameters/free-membership",
+    authenticateToken,
+    controller.getFreeMembership,
+);
+router.put(
+    "/api/v1/parameters/free-membership",
+    authenticateToken,
+    controller.putFreeMembership,
+);
 
 module.exports = router;
