@@ -124,6 +124,7 @@ async function login({ identifier, password, client: loginClient }) {
             sub: user.id,
             username: user.username,
             email: user.email,
+            userType: Number(user.user_type),
         },
         env.jwtSecret,
         { expiresIn: "7d" },

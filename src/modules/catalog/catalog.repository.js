@@ -11,6 +11,7 @@ async function listProducts(pool) {
         FROM public.product p
         INNER JOIN public.product_category pc
             ON pc.id = p.product_category_id
+        WHERE p.active = true
         ORDER BY p.id;
     `);
 
@@ -34,7 +35,8 @@ async function listPromotions(pool, { isFreeShippingVisible }) {
         FROM public.promotion p
         INNER JOIN public.promotion_category pc
             ON pc.id = p.promotion_category_id
-        WHERE p.promotion_category_id <> 3 OR $1 = true
+        WHERE p.active = true
+          AND (p.promotion_category_id <> 3 OR $1 = true)
         ORDER BY p.id;
     `,
         [isFreeShippingVisible],
