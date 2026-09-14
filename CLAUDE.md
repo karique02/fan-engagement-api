@@ -12,9 +12,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The app throws at startup (before listening) if any of these are missing:
 `DATABASE_URL`, `JWT_SECRET`, `API_PUBLIC_URL`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`,
-`FIREBASE_SERVICE_ACCOUNT_JSON`. `PORT` defaults to `3000`. `.env.example` only lists
-`PORT`/`DATABASE_URL`/`JWT_SECRET`/`FIREBASE_SERVICE_ACCOUNT_JSON` — it's stale on the rest, copy the
-full list above when setting up a local `.env`.
+`FIREBASE_SERVICE_ACCOUNT_JSON`, `BUCKET`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, `REGION`, `ENDPOINT`.
+`PORT` defaults to `3000`. `.env.example` only lists a subset — it's stale on the rest, copy the full
+list above when setting up a local `.env`.
+
+The 5 bucket variables (`BUCKET`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, `REGION`, `ENDPOINT`) come from
+a Railway Storage Bucket (`catalog-images`, in the `fan-engagement-walter-ormeño` project) enlazado al
+servicio por variable reference (preset AWS SDK) — see spec 20. Locally, get them from that bucket's
+Credentials tab in the Railway dashboard (or `railway variables` if linked) and paste them into `.env`;
+never fabricate values.
 
 `FIREBASE_SERVICE_ACCOUNT_JSON` holds the full Firebase service account key (Firebase console →
 Project Settings → Service Accounts → Generate new private key) as a single-line JSON string, pasted
@@ -270,11 +276,41 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   pattern as `purchases.service.js`'s `listPurchases`, `AppError(400, …)` for an invalid `search`.
   Response `data`: `{ fans: [...], pagination: { page, pageSize, totalItems, totalPages } }`.
 - `images` — authenticated; lists `public.image` rows (`id`, `url`, `sourceType`, `sourceId`), used
-  by the web's Notifications tab image picker. One-time seeded with a manual `INSERT ... SELECT
-  DISTINCT ... ON CONFLICT (url) DO NOTHING` per source table, copying the distinct URLs already in
-  `product.image`/`promotion.image` (no seed script kept in the repo — run it directly against the
-  target database if `image` ever needs re-seeding) — there is no upload flow, the picker only offers
-  what's already seeded
+  by the web's Notifications tab image picker. Each row's returned `url` is resolved
+  (`src/shared/images/presignedUrlCache.js`'s `resolveImageUrl`): a value starting with `http` (legacy
+  external URL) is returned as-is; anything else is treated as a bucket `object_key` and presigned
+  (7-day signature, cached in-process by key and transparently renewed once under ~24h of life
+  remain — an in-memory cache, so it resets on every restart/redeploy with no user-visible downtime).
+  This same resolver is applied to `product.image`/`promotion.image` (`catalog.service.js`) and
+  `member_promotion.image` (`membership.service.js`) — the storage convention (http passthrough vs.
+  bucket key) is shared across all four `image`-bearing columns (spec 20).
+- `admin/images` (`src/modules/images/`, spec 20) — `authenticateToken` + `requireAdmin`, mounted the
+  same way as `catalogAdmin`'s admin routes. `POST admin/images` (multipart, field name `file`)
+  uploads a catalog image to the bucket: `imagesUploadRateLimit.middleware.js` first enforces 20
+  uploads/hour per admin user (in-memory sliding window, counts every request that reaches the route,
+  including ones later rejected for size/type — not just successful ones), then
+  `imagesUpload.middleware.js` (multer, memory storage, 5MB hard limit, translated to a clean `400`
+  `AppError` on `LIMIT_FILE_SIZE` instead of a raw multer error) parses the file. `images.service.js`
+  then validates the *real* file type by magic bytes (`src/shared/images/detectImageType.js` — jpeg/
+  png/gif/webp signatures; extension and declared `Content-Type` are never trusted), uploads to the
+  bucket at a random key (`catalog/<uuid>.<ext>`) via `@aws-sdk/client-s3`, and inserts a
+  `public.image` row (`source_type: 'upload'`, `source_id: null`, `object_key` and `url` both set to
+  that key). `GET admin/images/:id/usage` looks up which `product`/`promotion`/`member_promotion` rows
+  currently have that image's value in their own `image` column (`{ products, promotions,
+  memberPromotions }`, each `{ id, name|title }`). `DELETE admin/images/:id` removes the object from
+  the bucket (if it has one — a legacy external-URL row has no `object_key`) and the `public.image`
+  row; nothing else is auto-deleted, and a row is never removed just because a product/promotion later
+  stops referencing it (deliberate — see spec 20's Decisiones) — checking usage before deleting is a
+  UI-level responsibility (spec 21).
+  `scripts/migrate-images-to-bucket.js` (run with `node scripts/migrate-images-to-bucket.js`, or
+  `railway run -- node scripts/migrate-images-to-bucket.js` against a linked environment) migrates
+  every remaining external-URL `image` on `product`/`promotion`/`member_promotion` to the bucket:
+  downloads each URL, validates its real type the same way as the upload endpoint, uploads it, and
+  updates the row's `image` column to the new `object_key` — idempotent (only selects rows whose
+  `image` still starts with `http`) and non-aborting (a single row's failure, e.g. a dead external
+  URL, is logged and skipped, the rest still run). Per the root `CLAUDE.md`'s production-DB rule, this
+  script is the one explicit, spec-authorized exception allowing the agent to run it directly against
+  Railway — every other production SQL still goes through the user via pgAdmin.
 - `notifications/send` — authenticated; sends a push notification via Firebase Admin
   (`getMessaging().sendEachForMulticast`, batched to ≤500 tokens) to either every user with a
   non-null `fcm_token` (`target: "all"`) or an explicit `userIds` list (`target: "users"`). A token

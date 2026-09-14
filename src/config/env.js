@@ -28,6 +28,26 @@ if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is required");
 }
 
+if (!process.env.BUCKET) {
+    throw new Error("BUCKET is required");
+}
+
+if (!process.env.ACCESS_KEY_ID) {
+    throw new Error("ACCESS_KEY_ID is required");
+}
+
+if (!process.env.SECRET_ACCESS_KEY) {
+    throw new Error("SECRET_ACCESS_KEY is required");
+}
+
+if (!process.env.REGION) {
+    throw new Error("REGION is required");
+}
+
+if (!process.env.ENDPOINT) {
+    throw new Error("ENDPOINT is required");
+}
+
 module.exports = {
     port: process.env.PORT || 3000,
     host: "0.0.0.0",
@@ -39,4 +59,9 @@ module.exports = {
     mailFrom: process.env.MAIL_FROM,
     firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
     nodeEnv: process.env.NODE_ENV,
+    bucket: process.env.BUCKET,
+    accessKeyId: process.env.ACCESS_KEY_ID,
+    secretAccessKey: process.env.SECRET_ACCESS_KEY,
+    region: process.env.REGION,
+    endpoint: process.env.ENDPOINT,
 };
