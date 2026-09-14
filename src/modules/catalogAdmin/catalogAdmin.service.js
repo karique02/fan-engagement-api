@@ -411,7 +411,26 @@ async function listPromotions(query) {
         pageSize,
         offset,
     });
-    return buildPagination(rows, { page, pageSize });
+    const { items, pagination } = buildPagination(rows, { page, pageSize });
+
+    const productIdRows = await repository.findPromotionProductIdsByPromotionIds(
+        pool,
+        items.map((item) => item.id),
+    );
+    const productIdsByPromotionId = new Map();
+    for (const row of productIdRows) {
+        const list = productIdsByPromotionId.get(row.promotionId) ?? [];
+        list.push(row.productId);
+        productIdsByPromotionId.set(row.promotionId, list);
+    }
+
+    return {
+        items: items.map((item) => ({
+            ...item,
+            productIds: productIdsByPromotionId.get(item.id) ?? [],
+        })),
+        pagination,
+    };
 }
 
 async function createPromotion(body) {

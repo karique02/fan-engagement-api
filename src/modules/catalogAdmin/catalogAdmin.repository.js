@@ -444,6 +444,24 @@ async function findPromotionProductIds(pool, promotionId) {
     return result.rows.map((row) => row.productId);
 }
 
+async function findPromotionProductIdsByPromotionIds(pool, promotionIds) {
+    if (promotionIds.length === 0) {
+        return [];
+    }
+
+    const result = await pool.query(
+        `
+            SELECT promotion_id AS "promotionId", product_id AS "productId"
+            FROM public.promotion_product
+            WHERE promotion_id = ANY($1::bigint[])
+            ORDER BY promotion_id, product_id;
+        `,
+        [promotionIds],
+    );
+
+    return result.rows;
+}
+
 // Ventajas de ser miembro
 
 const MEMBER_PROMOTION_ADMIN_COLUMNS = `
@@ -549,6 +567,7 @@ module.exports = {
     replacePromotionProducts,
     findPromotionById,
     findPromotionProductIds,
+    findPromotionProductIdsByPromotionIds,
     listMemberPromotionsAdmin,
     createMemberPromotion,
     updateMemberPromotion,
