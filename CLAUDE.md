@@ -58,7 +58,7 @@ src/
   shared/
     http/                 # response.js (sendSuccess/sendError), asyncHandler.js
     errors/                # AppError.js, error.middleware.js, notFound.middleware.js
-    middlewares/           # authenticateToken.js
+    middlewares/           # authenticateToken.js, requireAdmin.js
     validation/            # listQuery.js (parseInteractionListQuery), patterns.js (regexes, statuses)
     sql/                   # promotionUnitPrice.js (PROMOTION_UNIT_PRICE_SELECT/JOIN)
   modules/
@@ -67,6 +67,7 @@ src/
     users/                 # GET /users, PUT|DELETE /users/me/fcm-token
     images/                # GET /images
     catalog/               # GET /products, GET /promotions
+    catalogAdmin/           # admin/* CRUD of products, promotions, categories, member promotions
     interactions/          # products/promotions interaction routes (2 public, 2 authenticated)
     cart/                  # 6 shopping cart routes
     purchases/             # checkout + history routes, fetchPurchaseItemsByPurchaseIds
@@ -109,14 +110,26 @@ is emailed, only its SHA-256 hash is stored in `email_verification`
 meant to be opened directly from the emailed link.
 `POST /api/v1/auth/login` also returns `data.user.userType` (the `public."user".user_type` column,
 `1` or `2`) — used by `fan-engagement-web` to gate its Dashboard tab/route to `userType === 2`. The
-signed JWT itself is unchanged (`sub`/`username`/`email` only); `userType` travels only in the login
-response body. The login body also accepts an optional `client` field, restricting login to the account type each
+signed JWT payload also carries `userType` (spec 19, added so `requireAdmin` below can read it from
+`req.authenticatedUser` without a DB round-trip) alongside `sub`/`username`/`email` — a token issued
+before spec 19 won't have it, so `requireAdmin` treats a missing/mismatched `userType` claim as
+non-admin (`403`), never a crash. The login body also accepts an optional `client` field, restricting login to the account type each
 client expects: `client === "web"` rejects with `403`/`data.reason: "not_admin"` when the matched
 user's `user_type !== 2` (restricting `fan-engagement-web` to admin accounts only); `client ===
 "android"` rejects with `403`/`data.reason: "not_fan"` when `user_type !== 1` (restricting
 `fan-engagement-android` to fan accounts only, reversing the earlier exception that let admins log
 in there unrestricted). Either rejection returns no `accessToken`/`user` in the response. Any other
 value or an absent `client` field leaves login unchanged.
+
+**Admin authorization** (spec 19): `requireAdmin` middleware
+(`src/shared/middlewares/requireAdmin.js`) responds `403` unless
+`req.authenticatedUser.userType === 2` — it always runs **after** `authenticateToken` (so a request
+with no/invalid token still gets `401` from `authenticateToken` first, never a `403` from
+`requireAdmin`). This is the first server-side role check in the API — every previous admin-only
+surface (dashboard, notifications, parameters) was gated client-side only. All `/api/v1/admin/*`
+routes (`catalogAdmin` module below) apply both middlewares via a single `router.use("/api/v1/admin",
+authenticateToken, requireAdmin)` in `catalogAdmin.routes.js`, rather than repeating both on every
+route like other modules do with `authenticateToken` alone.
 
 **Response envelope**: every route responds via `sendSuccess(res, req, { statusCode, message, data })`
 or `sendError(res, req, { statusCode, message, data })` (`src/shared/http/response.js`). Response
@@ -136,7 +149,37 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
 **Route groups** (all under `/api/v1`):
 - `auth/*` — register, login, verify-email (public, HTML response), resend-email-verification
 - `users/me/fcm-token` — push token register/delete (authenticated)
-- `products`, `promotions` — read-only catalog (authenticated)
+- `products`, `promotions` — read-only catalog (authenticated); both now filter `WHERE active =
+  true` (spec 19) so an item soft-deleted through the admin CRUD below stops appearing here
+- `admin/products`, `admin/product-categories`, `admin/promotions`, `admin/promotion-categories`,
+  `admin/member-promotions` (`src/modules/catalogAdmin/`, spec 19) — every route requires
+  `authenticateToken` + `requireAdmin` (see **Admin authorization** above). `GET admin/products`,
+  `GET admin/promotions`, `GET admin/member-promotions` are paginated (`search`/`page`/`pageSize`,
+  same `COUNT(*) OVER()` pattern as `purchases`/`users/fans`) and include inactive rows, unlike their
+  public read-only counterparts; the two category endpoints (`admin/product-categories`,
+  `admin/promotion-categories`) return a plain unpaginated list, matching the route table in spec 19
+  (no `search`/`page`/`pageSize` params for those two). `product`/`promotion` support soft delete:
+  `DELETE` sets `active = false` (row kept, never physically removed — interaction/purchase history
+  FKs into these tables), and `active` is also accepted on `PUT` so the same endpoint reactivates a
+  previously deactivated item — there's no separate `/restore` route. Categories have no `active`
+  column; `DELETE` on a category is a real `DELETE FROM`, blocked with `409` (pre-checked with a
+  `COUNT(*)` query, not a caught FK error) if any `product`/`promotion` still references it.
+  `POST`/`PUT admin/promotions` take `productIds: number[]` and replace `promotion_product` for that
+  promotion in one transaction (`replacePromotionProducts` in `catalogAdmin.repository.js`: delete
+  all rows for the promotion, then re-insert the given list) — always the full desired list, no
+  incremental add/remove. Payload validation mirrors the schema's own `CHECK` constraints
+  (`price >= 0`, `0 < discountPercentage <= 100`, `buyQuantity > payQuantity` when both are given,
+  varchar length caps) and is done in `catalogAdmin.service.js`, not the repository; a `deadline`
+  must additionally be a real future date, but only when creating a promotion (an update may set any
+  valid date). A foreign-key violation on an unknown `productCategoryId`/`promotionCategoryId`/
+  `productIds` entry is caught by constraint name (same pattern as
+  `interactions.service.js`) and re-thrown as a clean `400 AppError` instead of a raw `500`.
+  `product`, `product_category`, `promotion`, and `promotion_category` did not have an `id` sequence/
+  `DEFAULT` before spec 19 (unlike `member_promotion`, which already did) — they were only ever
+  seeded with explicit ids, never inserted from application code — so spec 19 also added
+  `<table>_id_seq` + `ALTER TABLE ... ALTER COLUMN id SET DEFAULT nextval(...)` for all four tables
+  (seeded starting at `MAX(id) + 1`) as a prerequisite for these `POST` endpoints to work at all; this
+  wasn't in the spec's own migration section, it surfaced while implementing it.
 - `products/interaction`, `promotions/interaction` — fan engagement tracking (authenticated); this is
   the core product signal the recommender trains on. `products/interaction/all` and
   `promotions/interaction/all` are the paginated/filterable list equivalents and are intentionally
