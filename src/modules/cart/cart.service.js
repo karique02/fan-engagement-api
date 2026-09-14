@@ -1,8 +1,9 @@
 const pool = require("../../config/database");
 const AppError = require("../../shared/errors/AppError");
+const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
 const repository = require("./cart.repository");
 
-function mapCartItemRow(item) {
+async function mapCartItemRow(item) {
     const baseItem = {
         id: item.cartItemId,
         type: item.itemType,
@@ -20,7 +21,7 @@ function mapCartItemRow(item) {
                 productCategoryId: item.productCategoryId,
                 productCategoryName: item.productCategoryName,
                 price: item.productPrice,
-                image: item.productImage,
+                image: await resolveImageUrl(item.productImage),
                 description: item.productDescription,
             },
             promotion: null,
@@ -39,7 +40,7 @@ function mapCartItemRow(item) {
             promotionCategoryId: item.promotionCategoryId,
             promotionCategoryName: item.promotionCategoryName,
             description: item.promotionDescription,
-            image: item.promotionImage,
+            image: await resolveImageUrl(item.promotionImage),
             deadline: item.promotionDeadline,
             isExpired: item.isPromotionExpired,
         },
@@ -63,7 +64,7 @@ async function getCart(userId) {
         id: cart.id,
         createdAt: cart.createdAt,
         updatedAt: cart.updatedAt,
-        items: itemRows.map(mapCartItemRow),
+        items: await Promise.all(itemRows.map(mapCartItemRow)),
     };
 }
 
@@ -105,7 +106,7 @@ async function addProduct({ userId, productId, quantity }) {
                 name: product.name,
                 productCategoryId: product.productCategoryId,
                 price: product.price,
-                image: product.image,
+                image: await resolveImageUrl(product.image),
                 description: product.description,
             },
         };
@@ -168,7 +169,7 @@ async function addPromotion({ userId, promotionId, quantity }) {
                 promotionCategoryId: promotion.promotionCategoryId,
                 promotionCategoryName: promotion.promotionCategoryName,
                 description: promotion.description,
-                image: promotion.image,
+                image: await resolveImageUrl(promotion.image),
                 deadline: promotion.deadline,
             },
         };

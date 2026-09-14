@@ -2,6 +2,7 @@ const { getMessaging } = require("firebase-admin/messaging");
 require("../config/firebase");
 const pool = require("../config/database");
 const { getIntegerParameter } = require("../modules/parameters/parameters.repository");
+const { resolveImageUrl } = require("../shared/images/presignedUrlCache");
 
 let isPersonalizedNotificationCycleRunning = false;
 async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
@@ -110,15 +111,17 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
             "messaging/invalid-registration-token",
         ]);
 
-        const results = candidates.map((candidate) => ({
-            userId: candidate.user_id,
-            username: candidate.username,
-            productId: candidate.product_id,
-            productName: candidate.product_name,
-            productImage: candidate.product_image,
-            fcmToken: candidate.fcm_token,
-            status: "pending",
-        }));
+        const results = await Promise.all(
+            candidates.map(async (candidate) => ({
+                userId: candidate.user_id,
+                username: candidate.username,
+                productId: candidate.product_id,
+                productName: candidate.product_name,
+                productImage: await resolveImageUrl(candidate.product_image),
+                fcmToken: candidate.fcm_token,
+                status: "pending",
+            })),
+        );
 
         const tokensToClear = [];
 

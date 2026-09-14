@@ -6,7 +6,25 @@ const {
     INTERACTION_PAGE_SIZES,
     PURCHASE_STATUSES,
 } = require("../../shared/validation/patterns");
+const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
 const repository = require("./purchases.repository");
+
+async function resolveItemImage(item) {
+    if (item.product) {
+        return { ...item, product: { ...item.product, image: await resolveImageUrl(item.product.image) } };
+    }
+    if (item.promotion) {
+        return {
+            ...item,
+            promotion: { ...item.promotion, image: await resolveImageUrl(item.promotion.image) },
+        };
+    }
+    return item;
+}
+
+async function resolveItemsImages(items) {
+    return Promise.all(items.map(resolveItemImage));
+}
 
 /*
  * Protegido.
@@ -90,7 +108,7 @@ async function checkout(userId) {
         return {
             ...purchase,
             totalAmount: Number(purchase.totalAmount),
-            items: itemsByPurchaseId.get(purchase.id) ?? [],
+            items: await resolveItemsImages(itemsByPurchaseId.get(purchase.id) ?? []),
         };
     } catch (error) {
         if (!(error instanceof AppError)) {
@@ -245,11 +263,13 @@ async function listMyPurchases({ userId, query }) {
         purchaseIds,
     );
 
-    const purchases = rows.map(({ totalItems: _totalItems, totalAmount, ...row }) => ({
-        ...row,
-        totalAmount: Number(totalAmount),
-        items: itemsByPurchaseId.get(row.id) ?? [],
-    }));
+    const purchases = await Promise.all(
+        rows.map(async ({ totalItems: _totalItems, totalAmount, ...row }) => ({
+            ...row,
+            totalAmount: Number(totalAmount),
+            items: await resolveItemsImages(itemsByPurchaseId.get(row.id) ?? []),
+        })),
+    );
 
     return {
         purchases,
@@ -277,7 +297,7 @@ async function getPurchaseDetail(purchaseId) {
     return {
         ...purchase,
         totalAmount: Number(purchase.totalAmount),
-        items: itemsByPurchaseId.get(purchase.id) ?? [],
+        items: await resolveItemsImages(itemsByPurchaseId.get(purchase.id) ?? []),
     };
 }
 
