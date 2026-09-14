@@ -18,6 +18,7 @@ async function listImages() {
             id: image.id,
             sourceType: image.sourceType,
             sourceId: image.sourceId,
+            objectKey: image.objectKey ?? null,
             url: await resolveImageUrl(image.objectKey ?? image.url),
         })),
     );

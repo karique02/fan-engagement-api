@@ -173,7 +173,13 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   `POST`/`PUT admin/promotions` take `productIds: number[]` and replace `promotion_product` for that
   promotion in one transaction (`replacePromotionProducts` in `catalogAdmin.repository.js`: delete
   all rows for the promotion, then re-insert the given list) — always the full desired list, no
-  incremental add/remove. Payload validation mirrors the schema's own `CHECK` constraints
+  incremental add/remove. `GET admin/promotions` also includes each row's `productIds` (spec 21
+  addendum): `listPromotions` in `catalogAdmin.service.js` runs a second query
+  (`findPromotionProductIdsByPromotionIds`) against `promotion_product` for the whole page's promotion
+  ids and merges the results in JS, mirroring the `notification_log` + recipients pattern in
+  `notifications.service.js` — kept as a second query rather than a `JOIN`/`array_agg` in the main
+  paginated query so the `COUNT(*) OVER()` window function isn't affected by the join's row
+  multiplication. Payload validation mirrors the schema's own `CHECK` constraints
   (`price >= 0`, `0 < discountPercentage <= 100`, `buyQuantity > payQuantity` when both are given,
   varchar length caps) and is done in `catalogAdmin.service.js`, not the repository; a `deadline`
   must additionally be a real future date, but only when creating a promotion (an update may set any
@@ -275,15 +281,23 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   `1`), `pageSize` (`INTERACTION_PAGE_SIZES`, default `15`) — same paginate-with-`COUNT(*) OVER()`
   pattern as `purchases.service.js`'s `listPurchases`, `AppError(400, …)` for an invalid `search`.
   Response `data`: `{ fans: [...], pagination: { page, pageSize, totalItems, totalPages } }`.
-- `images` — authenticated; lists `public.image` rows (`id`, `url`, `sourceType`, `sourceId`), used
-  by the web's Notifications tab image picker. Each row's returned `url` is resolved
+- `images` — authenticated; lists `public.image` rows (`id`, `url`, `sourceType`, `sourceId`,
+  `objectKey`), used by the web's Notifications tab image picker and (spec 21) the generalized
+  `ImagePicker` in the Gestión tab's catalog CRUD forms. Each row's returned `url` is resolved
   (`src/shared/images/presignedUrlCache.js`'s `resolveImageUrl`): a value starting with `http` (legacy
   external URL) is returned as-is; anything else is treated as a bucket `object_key` and presigned
   (7-day signature, cached in-process by key and transparently renewed once under ~24h of life
   remain — an in-memory cache, so it resets on every restart/redeploy with no user-visible downtime).
   This same resolver is applied to `product.image`/`promotion.image` (`catalog.service.js`) and
   `member_promotion.image` (`membership.service.js`) — the storage convention (http passthrough vs.
-  bucket key) is shared across all four `image`-bearing columns (spec 20).
+  bucket key) is shared across all four `image`-bearing columns (spec 20). The `objectKey` field
+  (spec 21 addendum, additive — `null` for a legacy `http` row) exists because the resolved `url` is
+  presigned and never re-signed once persisted elsewhere: a caller that stores this endpoint's `url`
+  value (instead of the raw `objectKey`) into `product.image`/`promotion.image`/`member_promotion.image`
+  bakes in a signature that silently stops working once it expires, since `resolveImageUrl` treats
+  anything starting with `http` as a permanent external URL and never re-signs it. Callers persisting
+  a picked image (as opposed to just displaying it, like the Notifications send flow) must store
+  `objectKey ?? url` instead.
 - `admin/images` (`src/modules/images/`, spec 20) — `authenticateToken` + `requireAdmin`, mounted the
   same way as `catalogAdmin`'s admin routes. `POST admin/images` (multipart, field name `file`)
   uploads a catalog image to the bucket: `imagesUploadRateLimit.middleware.js` first enforces 20
