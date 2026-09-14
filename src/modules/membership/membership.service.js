@@ -2,6 +2,7 @@ const pool = require("../../config/database");
 const AppError = require("../../shared/errors/AppError");
 const repository = require("./membership.repository");
 const parametersRepository = require("../parameters/parameters.repository");
+const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
 
 function computeDaysRemaining(endsAt) {
     const diffMs = new Date(endsAt).getTime() - Date.now();
@@ -72,10 +73,13 @@ async function listPromotions(userId) {
 
     const isMember = Boolean(membership) && new Date(membership.endsAt) > new Date();
 
-    return promotions.map((promotion) => ({
-        ...promotion,
-        locked: !isMember,
-    }));
+    return Promise.all(
+        promotions.map(async (promotion) => ({
+            ...promotion,
+            image: await resolveImageUrl(promotion.image),
+            locked: !isMember,
+        })),
+    );
 }
 
 module.exports = { getMembershipStatus, activateTrial, listPromotions };
