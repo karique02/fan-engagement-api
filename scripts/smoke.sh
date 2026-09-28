@@ -159,6 +159,13 @@ request "recommendations_train" POST "/api/v1/recommendations/train" "" ""
 request "products_recommendations" GET "/api/v1/products/recommendations" "$TOKEN_FAN" ""
 request "promotions_recommendations" GET "/api/v1/promotions/recommendations" "$TOKEN_FAN" ""
 
+echo "== events =="
+request "events_list" GET "/api/v1/events?limit=10" "$TOKEN_FAN" ""
+request "events_detail_not_found" GET "/api/v1/events/999999999" "$TOKEN_FAN" ""
+request "admin_event_types_list" GET "/api/v1/admin/event-types" "$TOKEN_ADMIN" ""
+request "admin_events_list" GET "/api/v1/admin/events?page=1&pageSize=15" "$TOKEN_ADMIN" ""
+request "admin_events_forbidden" POST "/api/v1/admin/events" "$TOKEN_FAN" '{}'
+
 echo "== dashboard =="
 request "dashboard_engagement" GET "/api/v1/dashboard/engagement" "$TOKEN_ADMIN" ""
 
