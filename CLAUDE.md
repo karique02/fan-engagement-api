@@ -127,6 +127,25 @@ user's `user_type !== 2` (restricting `fan-engagement-web` to admin accounts onl
 in there unrestricted). Either rejection returns no `accessToken`/`user` in the response. Any other
 value or an absent `client` field leaves login unchanged.
 
+**Password reset** (spec 23): `POST /api/v1/auth/forgot-password` (`{ identifier, client }`) and
+`POST /api/v1/auth/reset-password` (`{ identifier, code, newPassword, client }`), both public. A
+6-digit code (`crypto.randomInt`, only its SHA-256 hash stored) is emailed via
+`sendPasswordResetEmail` (`src/modules/auth/templates/passwordResetEmail.js`) and persisted in
+`public.password_reset` (one row per user, same `ON CONFLICT (user_id) DO UPDATE` upsert pattern as
+`email_verification`, `expires_at = NOW() + INTERVAL '1 hour'`, `attempts` reset to `0` on every new
+code). `forgot-password` always responds with the same generic message — it never reveals whether
+the identifier exists — and only actually sends an email when the matched user is `state = 'active'`
+**and** its `user_type` matches the given `client` (`android` → `1`, `web` → `2`); a fan hitting it
+with `client: "web"` (or an admin with `client: "android"`) gets the same 200 response but no email.
+`reset-password` locks the `password_reset` row (`FOR UPDATE`) inside a transaction, rejects with a
+single generic `400 AppError` for every failure case (no matching active user for that `client`, no
+row, already used, expired, or `attempts >= 5`), increments `attempts` (committed) on a wrong code
+without touching `password_hash`, and on a correct code re-hashes with `argon2id`, updates
+`public."user".password_hash`, and marks the row `used_at` — making the code single-use. There is no
+rate limit on `forgot-password` itself (only the 5-attempt cap on `reset-password`), no deep link/URL
+in the email (code only, works identically for `fan-engagement-android` and `fan-engagement-web`),
+and no auto-login after a successful reset.
+
 **Admin authorization** (spec 19): `requireAdmin` middleware
 (`src/shared/middlewares/requireAdmin.js`) responds `403` unless
 `req.authenticatedUser.userType === 2` — it always runs **after** `authenticateToken` (so a request
@@ -153,7 +172,8 @@ that simply `throw`s (an `AppError` or otherwise) reaches the error middleware w
 needing its own `try { ... } catch (error) { next(error); }` boilerplate.
 
 **Route groups** (all under `/api/v1`):
-- `auth/*` — register, login, verify-email (public, HTML response), resend-email-verification
+- `auth/*` — register, login, verify-email (public, HTML response), resend-email-verification,
+  forgot-password/reset-password (spec 23, see below)
 - `users/me/fcm-token` — push token register/delete (authenticated)
 - `products`, `promotions` — read-only catalog (authenticated); both now filter `WHERE active =
   true` (spec 19) so an item soft-deleted through the admin CRUD below stops appearing here

@@ -156,10 +156,110 @@ async function findUserForResend(client, normalizedEmail) {
     return result.rows[0];
 }
 
+function createPasswordResetCode() {
+    const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+
+    const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+
+    return { code, codeHash };
+}
+
+async function createOrReplacePasswordReset(client, userId) {
+    const { code, codeHash } = createPasswordResetCode();
+
+    await client.query(
+        `
+            INSERT INTO public.password_reset (
+                user_id,
+                code_hash,
+                expires_at,
+                attempts,
+                created_at,
+                used_at
+            )
+            VALUES (
+                $1,
+                $2,
+                NOW() + INTERVAL '1 hour',
+                0,
+                NOW(),
+                NULL
+            )
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                code_hash = EXCLUDED.code_hash,
+                expires_at = EXCLUDED.expires_at,
+                attempts = 0,
+                created_at = NOW(),
+                used_at = NULL;
+        `,
+        [userId, codeHash],
+    );
+
+    return code;
+}
+
+async function findPasswordResetForUpdate(client, userId) {
+    const result = await client.query(
+        `
+            SELECT
+                user_id,
+                code_hash,
+                expires_at,
+                attempts,
+                used_at
+            FROM public.password_reset
+            WHERE user_id = $1
+            FOR UPDATE;
+        `,
+        [userId],
+    );
+
+    return result.rows[0];
+}
+
+async function incrementPasswordResetAttempts(client, userId) {
+    await client.query(
+        `
+            UPDATE public.password_reset
+            SET attempts = attempts + 1
+            WHERE user_id = $1;
+        `,
+        [userId],
+    );
+}
+
+async function markPasswordResetUsed(client, userId) {
+    await client.query(
+        `
+            UPDATE public.password_reset
+            SET used_at = NOW()
+            WHERE user_id = $1;
+        `,
+        [userId],
+    );
+}
+
+async function updateUserPasswordHash(client, userId, passwordHash) {
+    await client.query(
+        `
+            UPDATE public."user"
+            SET password_hash = $2
+            WHERE id = $1;
+        `,
+        [userId, passwordHash],
+    );
+}
+
 module.exports = {
     createOrReplaceEmailVerification,
     insertUser,
     findUserByIdentifier,
     consumeVerificationToken,
     findUserForResend,
+    createOrReplacePasswordReset,
+    findPasswordResetForUpdate,
+    incrementPasswordResetAttempts,
+    markPasswordResetUsed,
+    updateUserPasswordHash,
 };

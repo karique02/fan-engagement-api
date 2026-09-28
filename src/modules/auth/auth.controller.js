@@ -1,7 +1,12 @@
 const { sendSuccess, sendError } = require("../../shared/http/response");
 const asyncHandler = require("../../shared/http/asyncHandler");
 const service = require("./auth.service");
-const { parseRegisterInput, parseLoginInput } = require("./auth.schema");
+const {
+    parseRegisterInput,
+    parseLoginInput,
+    parseForgotPasswordInput,
+    parseResetPasswordInput,
+} = require("./auth.schema");
 const { renderEmailVerificationPage } = require("./templates/verificationPage");
 
 /*
@@ -141,4 +146,74 @@ const resendEmailVerification = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { register, login, verifyEmail, resendEmailVerification };
+/*
+ * Público.
+ *
+ * Solicita un código de recuperación de contraseña por correo. La
+ * respuesta es siempre genérica: no revela si la cuenta existe, su
+ * estado o su tipo de usuario. Solo se envía correo cuando la cuenta
+ * existe, está activa y su user_type corresponde al client indicado
+ * (android → fan, web → admin).
+ *
+ * Body:
+ * {
+ *   "identifier": "karique01",
+ *   "client": "android" | "web"
+ * }
+ */
+const forgotPassword = asyncHandler(async (req, res) => {
+    const parsed = parseForgotPasswordInput(req.body);
+
+    if (!parsed.ok) {
+        return sendError(res, req, {
+            statusCode: parsed.statusCode,
+            message: parsed.message,
+        });
+    }
+
+    await service.requestPasswordReset(parsed.value);
+
+    return sendSuccess(res, req, {
+        message:
+            "Si los datos corresponden a una cuenta, te enviamos un código a tu correo.",
+    });
+});
+
+/*
+ * Público.
+ *
+ * Verifica el código de 6 dígitos y actualiza la contraseña.
+ *
+ * Body:
+ * {
+ *   "identifier": "karique01",
+ *   "code": "123456",
+ *   "newPassword": "NuevaPassword123",
+ *   "client": "android" | "web"
+ * }
+ */
+const resetPassword = asyncHandler(async (req, res) => {
+    const parsed = parseResetPasswordInput(req.body);
+
+    if (!parsed.ok) {
+        return sendError(res, req, {
+            statusCode: parsed.statusCode,
+            message: parsed.message,
+        });
+    }
+
+    await service.resetPassword(parsed.value);
+
+    return sendSuccess(res, req, {
+        message: "Contraseña actualizada. Inicia sesión con tu nueva contraseña.",
+    });
+});
+
+module.exports = {
+    register,
+    login,
+    verifyEmail,
+    resendEmailVerification,
+    forgotPassword,
+    resetPassword,
+};

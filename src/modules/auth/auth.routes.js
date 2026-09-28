@@ -10,5 +10,7 @@ router.post(
     "/api/v1/auth/resend-email-verification",
     controller.resendEmailVerification,
 );
+router.post("/api/v1/auth/forgot-password", controller.forgotPassword);
+router.post("/api/v1/auth/reset-password", controller.resetPassword);
 
 module.exports = router;
