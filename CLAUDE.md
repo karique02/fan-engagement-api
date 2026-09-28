@@ -82,6 +82,7 @@ src/
     recommendations/       # train (delegates to the CF job), products/promotions recommendations
     dashboard/             # GET /dashboard/engagement
     membership/            # GET /membership/me, POST /membership/trial, GET /membership/promotions
+    events/                # GET /events, GET /events/:id, admin/events + admin/event-types CRUD (spec 26)
   jobs/
     collaborativeFiltering.job.js     # trainCollaborativeFiltering + its scheduler + running-flag
     personalizedNotifications.job.js  # runPersonalizedNotificationCycle + its scheduler + running-flag
@@ -452,6 +453,36 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   for a promotion with no linked products; nothing enforces that beyond convention (the `CHECK` just
   requires `fixed_price IS NULL OR fixed_price > 0`), so a promotion with both `fixed_price` **and**
   `promotion_product` rows would have `fixed_price` win silently.
+- `events`, `events/:id`, `admin/events`, `admin/event-types` (`src/modules/events/`, spec 26) —
+  eventos importantes del club (partidos, aniversarios, firmas…) backed by `public.event_type`,
+  `public.event` (`start_at`/`end_at` are `timestamptz`, unlike `promotion.deadline`, so they store an
+  absolute instant independent of the session `TimeZone`; `chk_event_dates` enforces `end_at IS NULL OR
+  end_at >= start_at`), and the N:N link tables `event_product`/`event_promotion` (`ON DELETE CASCADE`
+  from `event`). Public, `authenticateToken` only: `GET events?limit=N` lists active events whose
+  `COALESCE(end_at, start_at) >= NOW()` (an event in progress stays visible until it ends), ordered by
+  `start_at ASC`, unpaginated, `limit` optional (`400` if not a positive integer), without links;
+  `GET events/:id` returns the same fields plus `products[]` (only `product.active = true`) and
+  `promotions[]` (only `active = true` and `deadline >= NOW()`) in the exact item shape of
+  `products/:id`/`promotions/:id` — `404` ("Evento no encontrado") when the event doesn't exist, is
+  inactive, or already ended. Inactive/expired linked items are filtered at read time, never removed
+  from the link tables. Note the free-shipping visibility rules (spec 15) are **not** applied to an
+  event's `promotions[]` — only active + deadline. Admin routes register their own
+  `router.use("/api/v1/admin/events" | "/api/v1/admin/event-types", authenticateToken, requireAdmin)`
+  in `events.routes.js` (same per-path pattern as `admin/images`). `GET admin/events` is paginated
+  (`page`/`pageSize` as in `catalogAdmin`) with filters `search` (title `ILIKE`), `eventTypeId`,
+  `active` (`true`/`false`) and `when` (`upcoming`/`past`, same `COALESCE` criterion), ordered by
+  `start_at DESC`, each item including `active`, `createdAt`, `productIds` and `promotionIds` (second
+  query merged in JS, same reason as `admin/promotions`). `POST`/`PUT admin/events` take
+  `{ title, eventTypeId, description, location, image, startAt, endAt, active, productIds,
+  promotionIds }` (`active` required only on `PUT`, which also reactivates) and replace both link
+  tables in one transaction (full desired list, duplicates de-duplicated); unknown
+  `eventTypeId`/`productIds`/`promotionIds` are caught by FK constraint name and returned as `400`.
+  `DELETE admin/events/:id` is a soft delete (`active = false`). `admin/event-types` is an unpaginated
+  list + create/update/delete; `DELETE` is physical, pre-checked with `COUNT(*)` → `409` if any event
+  uses the type; a duplicate `name` (`event_type_name_key`) → `409`. `image` stores whatever the web's
+  image picker selects (a bucket `object_key` from `POST admin/images`, or a legacy URL) and the public
+  endpoints resolve it with `resolveImageUrl`; admin endpoints return it raw, like `admin/promotions`.
+  `admin/images/:id/usage` does not look at `event.image`.
 - `POST notifications/personalized/run` — authenticated; runs
   `runPersonalizedNotificationCycle({ ignoreSchedule: true })` immediately, bypassing the `enabled`
   flag and the hour window (but still respecting `repeatDays`) — a manual test trigger for admins.

@@ -21,6 +21,7 @@ const notificationsRoutes = require("./modules/notifications/notifications.route
 const parametersRoutes = require("./modules/parameters/parameters.routes");
 const membershipRoutes = require("./modules/membership/membership.routes");
 const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
+const eventsRoutes = require("./modules/events/events.routes");
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.use(notificationsRoutes);
 app.use(parametersRoutes);
 app.use(membershipRoutes);
 app.use(dashboardRoutes);
+app.use(eventsRoutes);
 
 app.use(notFoundMiddleware);
 app.use(errorMiddleware);
