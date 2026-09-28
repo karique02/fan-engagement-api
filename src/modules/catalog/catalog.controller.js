@@ -20,4 +20,22 @@ const listPromotions = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { listProducts, listPromotions };
+const getProductById = asyncHandler(async (req, res) => {
+    const product = await service.getProductById(req.params.id);
+
+    return sendSuccess(res, req, {
+        message: "Producto recuperado exitosamente",
+        data: { product },
+    });
+});
+
+const getPromotionById = asyncHandler(async (req, res) => {
+    const promotion = await service.getPromotionById(req.params.id);
+
+    return sendSuccess(res, req, {
+        message: "Promoción recuperada exitosamente",
+        data: { promotion },
+    });
+});
+
+module.exports = { listProducts, listPromotions, getProductById, getPromotionById };

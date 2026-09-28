@@ -4,7 +4,7 @@ const { parseInteractionListQuery } = require("../../shared/validation/listQuery
 const service = require("./notifications.service");
 
 const postSend = asyncHandler(async (req, res) => {
-    const { title, body, imageUrl, target, userIds } = req.body ?? {};
+    const { title, body, imageUrl, target, userIds, productId, promotionId } = req.body ?? {};
 
     if (
         typeof title !== "string" ||
@@ -47,12 +47,35 @@ const postSend = asyncHandler(async (req, res) => {
         });
     }
 
+    if (productId != null && promotionId != null) {
+        return sendError(res, req, {
+            statusCode: 400,
+            message: "No se puede vincular un producto y una promoción a la vez",
+        });
+    }
+
+    if (productId != null && !Number.isInteger(productId)) {
+        return sendError(res, req, {
+            statusCode: 400,
+            message: "El productId debe ser un número entero",
+        });
+    }
+
+    if (promotionId != null && !Number.isInteger(promotionId)) {
+        return sendError(res, req, {
+            statusCode: 400,
+            message: "El promotionId debe ser un número entero",
+        });
+    }
+
     const result = await service.sendNotification({
         title,
         body,
         imageUrl,
         target,
         userIds,
+        productId: productId ?? null,
+        promotionId: promotionId ?? null,
         sentByUserId: req.authenticatedUser.sub,
     });
 
