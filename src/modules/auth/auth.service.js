@@ -6,6 +6,10 @@ const env = require("../../config/env");
 const AppError = require("../../shared/errors/AppError");
 const repository = require("./auth.repository");
 const { sendEmailVerificationEmail } = require("./templates/verificationEmail");
+const { sendPasswordResetEmail } = require("./templates/passwordResetEmail");
+
+const CLIENT_USER_TYPE = { android: 1, web: 2 };
+const PASSWORD_RESET_MAX_ATTEMPTS = 5;
 
 async function register({ username, email, password, fullName, cellphone }) {
     const client = await pool.connect();
@@ -188,4 +192,121 @@ async function resendEmailVerification(normalizedEmail) {
     }
 }
 
-module.exports = { register, login, verifyEmail, resendEmailVerification };
+/*
+ * Respuesta siempre genérica (no revela si la cuenta existe, su tipo o su
+ * estado): solo envía correo si el usuario existe, está activo y su
+ * user_type corresponde al client indicado.
+ */
+async function requestPasswordReset({ identifier, client }) {
+    const dbClient = await pool.connect();
+
+    try {
+        const user = await repository.findUserByIdentifier(dbClient, identifier);
+
+        const expectedUserType = CLIENT_USER_TYPE[client];
+
+        if (
+            !user ||
+            user.state !== "active" ||
+            Number(user.user_type) !== expectedUserType
+        ) {
+            return;
+        }
+
+        await dbClient.query("BEGIN");
+
+        const code = await repository.createOrReplacePasswordReset(
+            dbClient,
+            user.id,
+        );
+
+        await dbClient.query("COMMIT");
+
+        try {
+            await sendPasswordResetEmail({ email: user.email, code });
+        } catch (emailError) {
+            console.error("Password reset email delivery error:", emailError);
+        }
+    } catch (error) {
+        await dbClient.query("ROLLBACK");
+        throw error;
+    } finally {
+        dbClient.release();
+    }
+}
+
+async function resetPassword({ identifier, code, newPassword, client }) {
+    const dbClient = await pool.connect();
+
+    const invalidCodeError = new AppError(
+        400,
+        "El código es inválido o expiró. Solicita uno nuevo.",
+    );
+
+    try {
+        await dbClient.query("BEGIN");
+
+        const user = await repository.findUserByIdentifier(dbClient, identifier);
+
+        const expectedUserType = CLIENT_USER_TYPE[client];
+
+        if (
+            !user ||
+            user.state !== "active" ||
+            Number(user.user_type) !== expectedUserType
+        ) {
+            await dbClient.query("ROLLBACK");
+            throw invalidCodeError;
+        }
+
+        const passwordReset = await repository.findPasswordResetForUpdate(
+            dbClient,
+            user.id,
+        );
+
+        if (
+            !passwordReset ||
+            passwordReset.used_at !== null ||
+            new Date(passwordReset.expires_at).getTime() <= Date.now() ||
+            passwordReset.attempts >= PASSWORD_RESET_MAX_ATTEMPTS
+        ) {
+            await dbClient.query("ROLLBACK");
+            throw invalidCodeError;
+        }
+
+        const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+
+        if (codeHash !== passwordReset.code_hash.trim()) {
+            await repository.incrementPasswordResetAttempts(dbClient, user.id);
+            await dbClient.query("COMMIT");
+            throw invalidCodeError;
+        }
+
+        const passwordHash = await argon2.hash(newPassword, {
+            type: argon2.argon2id,
+        });
+
+        await repository.updateUserPasswordHash(dbClient, user.id, passwordHash);
+        await repository.markPasswordResetUsed(dbClient, user.id);
+
+        await dbClient.query("COMMIT");
+    } catch (error) {
+        if (error instanceof AppError) {
+            throw error;
+        }
+
+        await dbClient.query("ROLLBACK");
+        throw error;
+    } finally {
+        dbClient.release();
+    }
+}
+
+module.exports = {
+    register,
+    login,
+    verifyEmail,
+    resendEmailVerification,
+    requestPasswordReset,
+    resetPassword,
+};

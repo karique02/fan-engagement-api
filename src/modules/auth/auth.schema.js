@@ -111,4 +111,77 @@ function parseLoginInput(body) {
     };
 }
 
-module.exports = { parseRegisterInput, parseLoginInput };
+function parseForgotPasswordInput(body) {
+    const { identifier, client } = body ?? {};
+
+    if (
+        typeof identifier !== "string" ||
+        identifier.trim().length === 0 ||
+        (client !== "android" && client !== "web")
+    ) {
+        return {
+            ok: false,
+            statusCode: 400,
+            message:
+                "El nombre de usuario o correo electrónico y el cliente ('android' o 'web') son obligatorios.",
+        };
+    }
+
+    return {
+        ok: true,
+        value: {
+            identifier: identifier.trim().toLowerCase(),
+            client,
+        },
+    };
+}
+
+function parseResetPasswordInput(body) {
+    const { identifier, code, newPassword, client } = body ?? {};
+
+    if (
+        typeof identifier !== "string" ||
+        identifier.trim().length === 0 ||
+        (client !== "android" && client !== "web")
+    ) {
+        return {
+            ok: false,
+            statusCode: 400,
+            message:
+                "El nombre de usuario o correo electrónico y el cliente ('android' o 'web') son obligatorios.",
+        };
+    }
+
+    if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
+        return {
+            ok: false,
+            statusCode: 400,
+            message: "El código debe contener exactamente 6 dígitos",
+        };
+    }
+
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+        return {
+            ok: false,
+            statusCode: 400,
+            message: "La nueva contraseña debe contener al menos 8 caracteres",
+        };
+    }
+
+    return {
+        ok: true,
+        value: {
+            identifier: identifier.trim().toLowerCase(),
+            code,
+            newPassword,
+            client,
+        },
+    };
+}
+
+module.exports = {
+    parseRegisterInput,
+    parseLoginInput,
+    parseForgotPasswordInput,
+    parseResetPasswordInput,
+};
