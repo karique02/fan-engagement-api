@@ -4,6 +4,11 @@ const pool = require("../config/database");
 const { getIntegerParameter } = require("../modules/parameters/parameters.repository");
 const { resolveImageUrl } = require("../shared/images/presignedUrlCache");
 
+const NOTIFICATION_BODY_TEMPLATES = {
+    product: (itemName) => `${itemName} podría gustarte. ¡Míralo en la app!`,
+    promotion: (itemName) => `${itemName} tiene algo para ti. ¡Míralo en la app!`,
+};
+
 let isPersonalizedNotificationCycleRunning = false;
 async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
     if (isPersonalizedNotificationCycleRunning) {
@@ -74,14 +79,11 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
                         u.id            AS user_id,
                         u.username,
                         u.fcm_token,
-                        p.id            AS product_id,
-                        p.name          AS product_name,
-                        p.image         AS product_image,
-                        upr.recommendation_score,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY u.id
-                            ORDER BY upr.recommendation_score DESC, p.id ASC
-                        ) AS ranking
+                        'product'       AS item_type,
+                        p.id            AS item_id,
+                        p.name          AS item_name,
+                        p.image         AS item_image,
+                        upr.recommendation_score
                     FROM public."user" u
                     INNER JOIN public.user_product_recommendation upr ON upr.user_id = u.id
                     INNER JOIN public.product p ON p.id = upr.product_id
@@ -96,9 +98,44 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
                             AND nlr.user_id = u.id
                             AND nl.created_at >= CURRENT_TIMESTAMP - ($1 || ' days')::interval
                       )
+
+                    UNION ALL
+
+                    SELECT
+                        u.id            AS user_id,
+                        u.username,
+                        u.fcm_token,
+                        'promotion'     AS item_type,
+                        pr.id           AS item_id,
+                        pr.title        AS item_name,
+                        pr.image        AS item_image,
+                        upromr.recommendation_score
+                    FROM public."user" u
+                    INNER JOIN public.user_promotion_recommendation upromr ON upromr.user_id = u.id
+                    INNER JOIN public.promotion pr ON pr.id = upromr.promotion_id
+                    WHERE u.fcm_token IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM public.notification_log nl
+                          INNER JOIN public.notification_log_recipient nlr
+                              ON nlr.notification_log_id = nl.id
+                          WHERE nl.target_type = 'personalized'
+                            AND nl.promotion_id = upromr.promotion_id
+                            AND nlr.user_id = u.id
+                            AND nl.created_at >= CURRENT_TIMESTAMP - ($1 || ' days')::interval
+                      )
+                ),
+                ranked AS (
+                    SELECT
+                        candidate.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY user_id
+                            ORDER BY recommendation_score DESC, item_type, item_id
+                        ) AS ranking
+                    FROM candidate
                 )
-                SELECT user_id::integer, username, fcm_token, product_id::integer, product_name, product_image
-                FROM candidate
+                SELECT user_id::integer, username, fcm_token, item_type, item_id::integer, item_name, item_image
+                FROM ranked
                 WHERE ranking = 1;
             `,
             [repeatDays],
@@ -115,9 +152,10 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
             candidates.map(async (candidate) => ({
                 userId: candidate.user_id,
                 username: candidate.username,
-                productId: candidate.product_id,
-                productName: candidate.product_name,
-                productImage: await resolveImageUrl(candidate.product_image),
+                itemType: candidate.item_type,
+                itemId: candidate.item_id,
+                itemName: candidate.item_name,
+                itemImage: await resolveImageUrl(candidate.item_image),
                 fcmToken: candidate.fcm_token,
                 status: "pending",
             })),
@@ -133,11 +171,12 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
                     token: candidate.fcmToken,
                     notification: {
                         title: "Te puede interesar",
-                        body: `${candidate.productName} podría gustarte. ¡Míralo en la app!`,
-                        ...(candidate.productImage
-                            ? { imageUrl: candidate.productImage }
+                        body: NOTIFICATION_BODY_TEMPLATES[candidate.itemType](candidate.itemName),
+                        ...(candidate.itemImage
+                            ? { imageUrl: candidate.itemImage }
                             : {}),
                     },
+                    data: { type: candidate.itemType, id: String(candidate.itemId) },
                 })),
             );
 
@@ -175,19 +214,22 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
                 for (const candidate of notifiedResults) {
                     const deliveredCount = candidate.status === "delivered" ? 1 : 0;
                     const failedCount = candidate.status === "failed" ? 1 : 0;
+                    const productId = candidate.itemType === "product" ? candidate.itemId : null;
+                    const promotionId = candidate.itemType === "promotion" ? candidate.itemId : null;
 
                     const logResult = await client.query(
                         `
                             INSERT INTO public.notification_log
-                                (title, body, image_url, target_type, sent_by_user_id, product_id, delivered_count, failed_count, no_token_count)
-                            VALUES ($1, $2, $3, 'personalized', NULL, $4, $5, $6, 0)
+                                (title, body, image_url, target_type, sent_by_user_id, product_id, promotion_id, delivered_count, failed_count, no_token_count)
+                            VALUES ($1, $2, $3, 'personalized', NULL, $4, $5, $6, $7, 0)
                             RETURNING id;
                         `,
                         [
                             "Te puede interesar",
-                            `${candidate.productName} podría gustarte. ¡Míralo en la app!`,
-                            candidate.productImage,
-                            candidate.productId,
+                            NOTIFICATION_BODY_TEMPLATES[candidate.itemType](candidate.itemName),
+                            candidate.itemImage,
+                            productId,
+                            promotionId,
                             deliveredCount,
                             failedCount,
                         ],
@@ -222,8 +264,9 @@ async function runPersonalizedNotificationCycle({ ignoreSchedule } = {}) {
             results: notifiedResults.map((candidate) => ({
                 userId: candidate.userId,
                 username: candidate.username,
-                productId: candidate.productId,
-                productName: candidate.productName,
+                itemType: candidate.itemType,
+                itemId: candidate.itemId,
+                itemName: candidate.itemName,
                 status: candidate.status,
             })),
         };

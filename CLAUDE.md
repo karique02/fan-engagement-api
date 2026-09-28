@@ -177,6 +177,14 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
 - `users/me/fcm-token` — push token register/delete (authenticated)
 - `products`, `promotions` — read-only catalog (authenticated); both now filter `WHERE active =
   true` (spec 19) so an item soft-deleted through the admin CRUD below stops appearing here
+- `products/:id`, `promotions/:id` (spec 24) — authenticated single-item detail, added for Android's
+  push-notification deep link (see **Deep linking** below): `404` via `AppError` if the id doesn't
+  exist, but unlike the list endpoints above **does not** filter by `active` — an inactive/deactivated
+  item still returns `200` with `active: false` in the payload, and the caller (Android) is the one
+  that decides whether to still navigate there or show a fallback based on that flag.
+  `catalog.repository.js`'s `findProductById`/`findPromotionById` back both this and the
+  `notifications`/`personalizedNotifications.job.js` existence+active checks below, so there's a
+  single source of truth for "does this id exist and is it active".
 - `admin/products`, `admin/product-categories`, `admin/promotions`, `admin/promotion-categories`,
   `admin/member-promotions` (`src/modules/catalogAdmin/`, spec 19) — every route requires
   `authenticateToken` + `requireAdmin` (see **Admin authorization** above). `GET admin/products`,
@@ -351,7 +359,14 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   FCM reports as unregistered/invalid gets cleared (`fcm_token = NULL`) automatically. Every call
   writes one `notification_log` row (aggregate counts) plus one `notification_log_recipient` row per
   intended recipient (`status`: `delivered`/`failed`/`no_token`) — the response echoes those counts
-  and a per-recipient breakdown
+  and a per-recipient breakdown. Accepts optional, mutually exclusive `productId`/`promotionId`
+  (spec 24, deep linking): `400` if both are sent, or if the referenced product/promotion doesn't
+  exist or is inactive (checked via `catalog.repository.js`'s `findProductById`/`findPromotionById`,
+  same source used by the detail endpoints above). When one is given, the FCM message gets a
+  `data: { type: "product"|"promotion", id: "<id>" }` block on top of `notification.{title,body,
+  imageUrl}` (`data` values must be strings per the FCM SDK), and `notification_log.product_id`/
+  `promotion_id` is set accordingly; sending neither leaves the payload/log exactly as before
+  (no `data` block, both columns `NULL`) — no regression for a plain broadcast/targeted send
 - `notifications/log` — authenticated; paginated/filterable (reuses `parseInteractionListQuery()` with
   `entityParam: "title"`, so it accepts the same `page`/`pageSize`/`dateFrom`/`dateTo` contract as the
   interaction list endpoints, plus `title` — `ILIKE` on `notification_log.title` — and `username` —
@@ -453,17 +468,25 @@ cycle (`runPersonalizedNotificationCycle`, guarded by its own `isPersonalizedNot
 flag): unless `ignoreSchedule: true`, skips if `personalized_notification_enabled = 0` or the current
 hour in `America/Lima` (via `Intl.DateTimeFormat`) falls outside
 `[personalized_notification_start_hour, personalized_notification_end_hour)`; otherwise selects, in one
-query, the highest-`recommendation_score` product per user from `user_product_recommendation` among
-users with a non-null `fcm_token` whose selected product hasn't been sent to them (`target_type =
-'personalized'`) within the last `personalized_notification_repeat_days` days; sends one
-`getMessaging().sendEach(...)` message per user (title `"Te puede interesar"`, fixed body template,
-`product.image` as `imageUrl` when present) in batches of ≤500; clears `fcm_token` on
+query (spec 24), the highest-`recommendation_score` candidate **per user across both**
+`user_product_recommendation` and `user_promotion_recommendation` — a `UNION ALL` normalizes both
+sources to common columns (`item_type`, `item_id`, `item_name`, `item_image`,
+`recommendation_score`), each branch excluding items already sent to that user
+(`notification_log.product_id`/`promotion_id` respectively, `target_type = 'personalized'`) within
+the last `personalized_notification_repeat_days` days (same single parameter reused for both types,
+no separate promotion cooldown), then a `ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY
+recommendation_score DESC, item_type, item_id)` keeps only the single top candidate per user —
+**at most one notification per user per cycle**, whichever type/item scored higher; sends one
+`getMessaging().sendEach(...)` message per user (title `"Te puede interesar"`, body from
+`NOTIFICATION_BODY_TEMPLATES[itemType]` — distinct product/promotion templates — item's `image` as
+`imageUrl` when present, plus `data: { type: itemType, id: String(itemId) }` for Android's deep
+link) in batches of ≤500; clears `fcm_token` on
 `messaging/registration-token-not-registered`/`messaging/invalid-registration-token` exactly like
 `/notifications/send`; and inserts one `notification_log` row per notified user
-(`target_type='personalized'`, `sent_by_user_id=NULL`, `product_id` set) plus its
-`notification_log_recipient` row, in one transaction. `sent_by_user_id IS NULL` on `notification_log`
-now means a system-originated send; the web's `/notifications` tab renders that as
-"Sistema (automático)".
+(`target_type='personalized'`, `sent_by_user_id=NULL`, `product_id` **or** `promotion_id` set
+depending on `item_type`, the other left `NULL`) plus its `notification_log_recipient` row, in one
+transaction. `sent_by_user_id IS NULL` on `notification_log` now means a system-originated send; the
+web's `/notifications` tab renders that as "Sistema (automático)".
 
 **Recommendations engine**: like the personalized-notifications job, `trainCollaborativeFiltering()`,
 `trainProductRecommendations()`/`trainPromotionRecommendations()`,

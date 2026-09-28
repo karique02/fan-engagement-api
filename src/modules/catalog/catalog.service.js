@@ -1,5 +1,6 @@
 const pool = require("../../config/database");
 const repository = require("./catalog.repository");
+const AppError = require("../../shared/errors/AppError");
 const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
 const {
     isFreeShippingPromotionVisible,
@@ -31,4 +32,29 @@ async function listPromotions(userId) {
     );
 }
 
-module.exports = { listProducts, listPromotions };
+async function getProductById(id) {
+    const product = await repository.findProductById(pool, id);
+
+    if (!product) {
+        throw new AppError(404, "Producto no encontrado");
+    }
+
+    return { ...product, image: await resolveImageUrl(product.image) };
+}
+
+async function getPromotionById(id) {
+    const promotion = await repository.findPromotionById(pool, id);
+
+    if (!promotion) {
+        throw new AppError(404, "Promoción no encontrada");
+    }
+
+    return { ...promotion, image: await resolveImageUrl(promotion.image) };
+}
+
+module.exports = {
+    listProducts,
+    listPromotions,
+    getProductById,
+    getPromotionById,
+};

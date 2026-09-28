@@ -4,10 +4,42 @@ const pool = require("../../config/database");
 const AppError = require("../../shared/errors/AppError");
 const { runPersonalizedNotificationCycle } = require("../../jobs/personalizedNotifications.job");
 const repository = require("./notifications.repository");
+const catalogRepository = require("../catalog/catalog.repository");
 
-async function sendNotification({ title, body, imageUrl, target, userIds, sentByUserId }) {
+async function resolveLinkedItem({ productId, promotionId }) {
+    if (productId != null) {
+        const product = await catalogRepository.findProductById(pool, productId);
+        if (!product || !product.active) {
+            throw new AppError(400, "El producto vinculado no existe o está inactivo");
+        }
+        return { type: "product", id: productId };
+    }
+
+    if (promotionId != null) {
+        const promotion = await catalogRepository.findPromotionById(pool, promotionId);
+        if (!promotion || !promotion.active) {
+            throw new AppError(400, "La promoción vinculada no existe o está inactiva");
+        }
+        return { type: "promotion", id: promotionId };
+    }
+
+    return null;
+}
+
+async function sendNotification({
+    title,
+    body,
+    imageUrl,
+    target,
+    userIds,
+    productId,
+    promotionId,
+    sentByUserId,
+}) {
     const normalizedImageUrl =
         typeof imageUrl === "string" && imageUrl.length > 0 ? imageUrl : null;
+
+    const linkedItem = await resolveLinkedItem({ productId, promotionId });
 
     let recipientsRows;
     if (target === "all") {
@@ -45,6 +77,9 @@ async function sendNotification({ title, body, imageUrl, target, userIds, sentBy
                 body,
                 ...(normalizedImageUrl ? { imageUrl: normalizedImageUrl } : {}),
             },
+            ...(linkedItem
+                ? { data: { type: linkedItem.type, id: String(linkedItem.id) } }
+                : {}),
         });
 
         response.responses.forEach((sendResponse, index) => {
@@ -78,6 +113,8 @@ async function sendNotification({ title, body, imageUrl, target, userIds, sentBy
         deliveredCount,
         failedCount,
         noTokenCount,
+        productId: linkedItem?.type === "product" ? linkedItem.id : null,
+        promotionId: linkedItem?.type === "promotion" ? linkedItem.id : null,
     });
 
     await repository.insertNotificationLogRecipients(

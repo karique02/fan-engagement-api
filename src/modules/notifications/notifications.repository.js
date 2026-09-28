@@ -37,15 +37,28 @@ async function insertNotificationLog(pool, {
     deliveredCount,
     failedCount,
     noTokenCount,
+    productId,
+    promotionId,
 }) {
     const result = await pool.query(
         `
         INSERT INTO public.notification_log
-            (title, body, image_url, target_type, sent_by_user_id, delivered_count, failed_count, no_token_count)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (title, body, image_url, target_type, sent_by_user_id, delivered_count, failed_count, no_token_count, product_id, promotion_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id;
         `,
-        [title, body, imageUrl, target, sentByUserId, deliveredCount, failedCount, noTokenCount],
+        [
+            title,
+            body,
+            imageUrl,
+            target,
+            sentByUserId,
+            deliveredCount,
+            failedCount,
+            noTokenCount,
+            productId ?? null,
+            promotionId ?? null,
+        ],
     );
 
     return result.rows[0].id;
