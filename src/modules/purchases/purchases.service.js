@@ -4,6 +4,8 @@ const {
     INTERACTION_TEXT_FILTER_REGEX,
     INTERACTION_DATE_REGEX,
     INTERACTION_PAGE_SIZES,
+    PURCHASE_PAGE_SIZES,
+    PURCHASE_ITEM_TYPES,
     PURCHASE_STATUSES,
 } = require("../../shared/validation/patterns");
 const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
@@ -122,8 +124,9 @@ async function checkout(userId) {
 
 /*
  * Público (mismo criterio que products/interaction/all): historial global de
- * compras, paginado y filtrable por usuario, rango de fechas y estado.
- * Consumo: web admin.
+ * compras, paginado (10/20/30, default 10) y filtrable por usuario, rango de
+ * fechas, estado, rango de monto, tipo de ítem y nombre de ítem (al menos un
+ * ítem de la compra debe cumplir). Consumo: web admin.
  */
 async function listPurchases(query) {
     let username;
@@ -173,14 +176,65 @@ async function listPurchases(query) {
         }
     }
 
+    const readAmount = (paramName) => {
+        const raw = query[paramName];
+        if (raw === undefined || raw === "") {
+            return undefined;
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < 0) {
+            throw new AppError(
+                400,
+                `El parámetro '${paramName}' debe ser un número mayor o igual a 0`,
+            );
+        }
+        return value;
+    };
+
+    const minAmount = readAmount("minAmount");
+    const maxAmount = readAmount("maxAmount");
+
+    if (
+        minAmount !== undefined &&
+        maxAmount !== undefined &&
+        minAmount > maxAmount
+    ) {
+        throw new AppError(
+            400,
+            "El monto mínimo no puede ser mayor al monto máximo",
+        );
+    }
+
+    let itemType;
+    if (query.itemType !== undefined && query.itemType !== "") {
+        itemType = String(query.itemType);
+        if (!PURCHASE_ITEM_TYPES.includes(itemType)) {
+            throw new AppError(
+                400,
+                "El parámetro 'itemType' debe ser uno de: product, promotion",
+            );
+        }
+    }
+
+    let itemName;
+    if (query.itemName !== undefined && query.itemName !== "") {
+        itemName = String(query.itemName);
+        if (!INTERACTION_TEXT_FILTER_REGEX.test(itemName)) {
+            throw new AppError(
+                400,
+                "El parámetro 'itemName' contiene caracteres no permitidos",
+            );
+        }
+    }
+
     let page = Number.parseInt(query.page, 10);
     if (!Number.isInteger(page) || page < 1) {
         page = 1;
     }
 
     let pageSize = Number.parseInt(query.pageSize, 10);
-    if (!INTERACTION_PAGE_SIZES.includes(pageSize)) {
-        pageSize = 15;
+    if (!PURCHASE_PAGE_SIZES.includes(pageSize)) {
+        pageSize = 10;
     }
 
     const conditions = [];
@@ -201,6 +255,29 @@ async function listPurchases(query) {
     if (status) {
         params.push(status);
         conditions.push(`p.status = $${params.length}`);
+    }
+    if (minAmount !== undefined) {
+        params.push(minAmount);
+        conditions.push(`p.total_amount >= $${params.length}`);
+    }
+    if (maxAmount !== undefined) {
+        params.push(maxAmount);
+        conditions.push(`p.total_amount <= $${params.length}`);
+    }
+    if (itemType === "product") {
+        conditions.push(
+            `EXISTS (SELECT 1 FROM public.purchase_item pi WHERE pi.purchase_id = p.id AND pi.product_id IS NOT NULL)`,
+        );
+    } else if (itemType === "promotion") {
+        conditions.push(
+            `EXISTS (SELECT 1 FROM public.purchase_item pi WHERE pi.purchase_id = p.id AND pi.promotion_id IS NOT NULL)`,
+        );
+    }
+    if (itemName) {
+        params.push(`%${itemName}%`);
+        conditions.push(
+            `EXISTS (SELECT 1 FROM public.purchase_item pi WHERE pi.purchase_id = p.id AND pi.item_name ILIKE $${params.length})`,
+        );
     }
 
     const whereClause =

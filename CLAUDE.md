@@ -250,9 +250,15 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   recalculated against the catalog afterward, so a later price or promotion change doesn't alter
   historical purchases. `GET purchases` is the paginated/filterable global history (web admin) — same
   paginate-with-`COUNT(*) OVER()` pattern as `products/interaction/all`, reusing
-  `INTERACTION_TEXT_FILTER_REGEX`/`INTERACTION_DATE_REGEX`/`INTERACTION_PAGE_SIZES`
-  (`src/shared/validation/patterns.js`), with its own `status` filter
-  (`pending`/`completed`/`cancelled`) validated against `PURCHASE_STATUSES`; `GET purchases/me` is the
+  `INTERACTION_TEXT_FILTER_REGEX`/`INTERACTION_DATE_REGEX` (`src/shared/validation/patterns.js`), with
+  its own `status` filter (`pending`/`completed`/`cancelled`) validated against `PURCHASE_STATUSES`.
+  SPEC 28: its page size is `PURCHASE_PAGE_SIZES` (`10`/`20`/`30`, default `10`, always
+  `ORDER BY p.created_at DESC`) instead of `INTERACTION_PAGE_SIZES`, and it accepts `minAmount`/
+  `maxAmount` (number ≥ 0, `min ≤ max`, else `400`) over `p.total_amount`, `itemType`
+  (`product`/`promotion`, `PURCHASE_ITEM_TYPES`) and `itemName` (`ILIKE`, same text regex) — the item
+  filters are `EXISTS` subqueries on `purchase_item`, so a purchase matches if **at least one** of its
+  items does and the row still shows the whole purchase. `GET purchases/me` is untouched by SPEC 28
+  (still `15`/`30`/`45`); `GET purchases/me` is the
   same paginated shape forced to the authenticated user, **with** each purchase's items inlined (via
   the shared `fetchPurchaseItemsByPurchaseIds()` helper in `purchases.repository.js`) to avoid Android
   needing an N+1 detail call;
