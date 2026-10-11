@@ -34,8 +34,8 @@ const listPurchases = asyncHandler(async (req, res) => {
 /*
  * Protegido.
  *
- * Historial de compras del usuario autenticado, paginado, sin filtros,
- * incluyendo los ítems de cada compra. Consumo: Android.
+ * Historial de compras del usuario autenticado, paginado (10/20/30) y con
+ * filtros opcionales, incluyendo los ítems de cada compra. Consumo: Android.
  */
 const listMyPurchases = asyncHandler(async (req, res) => {
     const result = await service.listMyPurchases({
