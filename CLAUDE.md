@@ -236,7 +236,11 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   totalItems, totalPages }` alongside `interactions`, computed from a `COUNT(*) OVER()` window
   function in the same paginated query (no second round-trip).
 - `cart/*` — shopping cart CRUD: `GET cart`, `POST cart/products`, `POST cart/promotions`,
-  `PATCH cart/items/:cartItemId`, `DELETE cart/items/:cartItemId`, `DELETE cart` (all authenticated)
+  `PATCH cart/items/:cartItemId`, `DELETE cart/items/:cartItemId`, `DELETE cart` (all authenticated).
+  `GET cart` (spec 31) also returns per-item `unitPrice`/`lineTotal` (`number`, `null` when a promotion
+  has no computable price) and cart-level `totalAmount` (rounded to 2 decimals, `null` lines count as
+  0) and `itemCount` — same price rule as checkout (`PROMOTION_UNIT_PRICE_SELECT`/`_JOIN`), so the
+  total matches the `purchase.total_amount` that checkout would create. Empty/missing cart → `0`/`0`.
 - `purchases/*` — authenticated. `POST purchases` is checkout: converts the authenticated user's
   cart into a `purchase` (`status = 'pending'`) plus one `purchase_item` per cart line, in a single
   transaction, then empties the cart (same statement pattern as `DELETE cart`) — `400` if the cart is
