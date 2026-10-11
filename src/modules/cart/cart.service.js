@@ -3,11 +3,27 @@ const AppError = require("../../shared/errors/AppError");
 const { resolveImageUrl } = require("../../shared/images/presignedUrlCache");
 const repository = require("./cart.repository");
 
+/*
+ * Misma regla que el checkout (purchases.service.js::checkout): precio del
+ * producto o precio efectivo de la promoción. null = promoción sin precio
+ * calculable; el checkout lo trata como 0 al sumar.
+ */
+function resolveUnitPrice(item) {
+    const rawPrice =
+        item.itemType === "product" ? item.productPrice : item.promotionUnitPrice;
+
+    return rawPrice === null || rawPrice === undefined ? null : Number(rawPrice);
+}
+
 async function mapCartItemRow(item) {
+    const unitPrice = resolveUnitPrice(item);
+
     const baseItem = {
         id: item.cartItemId,
         type: item.itemType,
         quantity: item.quantity,
+        unitPrice,
+        lineTotal: unitPrice === null ? null : unitPrice * item.quantity,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
     };
@@ -55,16 +71,33 @@ async function getCart(userId) {
     const cart = await repository.findCartByUserId(pool, userId);
 
     if (!cart) {
-        return { id: null, createdAt: null, updatedAt: null, items: [] };
+        return {
+            id: null,
+            createdAt: null,
+            updatedAt: null,
+            totalAmount: 0,
+            itemCount: 0,
+            items: [],
+        };
     }
 
     const itemRows = await repository.listCartItems(pool, cart.id);
+    const items = await Promise.all(itemRows.map(mapCartItemRow));
+
+    // Se redondea a 2 decimales: purchase.total_amount es numeric(10,2).
+    const totalAmount =
+        Math.round(
+            items.reduce((sum, item) => sum + (item.lineTotal ?? 0), 0) * 100,
+        ) / 100;
+    const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
 
     return {
         id: cart.id,
         createdAt: cart.createdAt,
         updatedAt: cart.updatedAt,
-        items: await Promise.all(itemRows.map(mapCartItemRow)),
+        totalAmount,
+        itemCount,
+        items,
     };
 }
 

@@ -1,3 +1,8 @@
+const {
+    PROMOTION_UNIT_PRICE_SELECT,
+    PROMOTION_UNIT_PRICE_JOIN,
+} = require("../../shared/sql/promotionUnitPrice");
+
 async function findCartByUserId(pool, userId) {
     const result = await pool.query(
         `
@@ -54,7 +59,9 @@ async function listCartItems(pool, cartId) {
                         AND pr.deadline < CURRENT_TIMESTAMP
                     THEN true
                     ELSE false
-                END AS "isPromotionExpired"
+                END AS "isPromotionExpired",
+
+                (${PROMOTION_UNIT_PRICE_SELECT}) AS "promotionUnitPrice"
 
             FROM public.shopping_cart_item sci
 
@@ -69,6 +76,8 @@ async function listCartItems(pool, cartId) {
 
             LEFT JOIN public.promotion_category prm
                 ON prm.id = pr.promotion_category_id
+
+            ${PROMOTION_UNIT_PRICE_JOIN}
 
             WHERE sci.shopping_cart_id = $1
             ORDER BY sci.created_at DESC;
