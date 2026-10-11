@@ -3,7 +3,6 @@ const AppError = require("../../shared/errors/AppError");
 const {
     INTERACTION_TEXT_FILTER_REGEX,
     INTERACTION_DATE_REGEX,
-    INTERACTION_PAGE_SIZES,
     PURCHASE_PAGE_SIZES,
     PURCHASE_ITEM_TYPES,
     PURCHASE_STATUSES,
@@ -123,23 +122,11 @@ async function checkout(userId) {
 }
 
 /*
- * Público (mismo criterio que products/interaction/all): historial global de
- * compras, paginado (10/20/30, default 10) y filtrable por usuario, rango de
- * fechas, estado, rango de monto, tipo de ítem y nombre de ítem (al menos un
- * ítem de la compra debe cumplir). Consumo: web admin.
+ * Lee y valida los filtros compartidos por el listado admin y /me:
+ * dateFrom, dateTo, status, minAmount, maxAmount, itemType, itemName.
+ * Lanza AppError(400) si alguno es inválido.
  */
-async function listPurchases(query) {
-    let username;
-    if (query.username !== undefined && query.username !== "") {
-        username = String(query.username);
-        if (!INTERACTION_TEXT_FILTER_REGEX.test(username)) {
-            throw new AppError(
-                400,
-                "El parámetro 'username' contiene caracteres no permitidos",
-            );
-        }
-    }
-
+function parsePurchaseFilters(query) {
     const readDate = (paramName) => {
         const raw = query[paramName];
         if (raw === undefined || raw === "") {
@@ -227,23 +214,27 @@ async function listPurchases(query) {
         }
     }
 
-    let page = Number.parseInt(query.page, 10);
-    if (!Number.isInteger(page) || page < 1) {
-        page = 1;
-    }
+    return {
+        dateFrom,
+        dateTo,
+        status,
+        minAmount,
+        maxAmount,
+        itemType,
+        itemName,
+    };
+}
 
-    let pageSize = Number.parseInt(query.pageSize, 10);
-    if (!PURCHASE_PAGE_SIZES.includes(pageSize)) {
-        pageSize = 10;
-    }
-
-    const conditions = [];
-    const params = [];
-
-    if (username) {
-        params.push(`%${username}%`);
-        conditions.push(`u.username ILIKE $${params.length}`);
-    }
+/*
+ * Agrega a `conditions`/`params` las condiciones SQL de los filtros ya
+ * validados (alias de la compra: `p`). Los filtros de ítem usan EXISTS: la
+ * compra aparece si al menos un ítem cumple.
+ */
+function appendFilterConditions(
+    conditions,
+    params,
+    { dateFrom, dateTo, status, minAmount, maxAmount, itemType, itemName },
+) {
     if (dateFrom) {
         params.push(dateFrom);
         conditions.push(`p.created_at >= $${params.length}::date`);
@@ -279,6 +270,62 @@ async function listPurchases(query) {
             `EXISTS (SELECT 1 FROM public.purchase_item pi WHERE pi.purchase_id = p.id AND pi.item_name ILIKE $${params.length})`,
         );
     }
+}
+
+/*
+ * Público (mismo criterio que products/interaction/all): historial global de
+ * compras, paginado (10/20/30, default 10) y filtrable por usuario, rango de
+ * fechas, estado, rango de monto, tipo de ítem y nombre de ítem (al menos un
+ * ítem de la compra debe cumplir). Consumo: web admin.
+ */
+async function listPurchases(query) {
+    let username;
+    if (query.username !== undefined && query.username !== "") {
+        username = String(query.username);
+        if (!INTERACTION_TEXT_FILTER_REGEX.test(username)) {
+            throw new AppError(
+                400,
+                "El parámetro 'username' contiene caracteres no permitidos",
+            );
+        }
+    }
+
+    const {
+        dateFrom,
+        dateTo,
+        status,
+        minAmount,
+        maxAmount,
+        itemType,
+        itemName,
+    } = parsePurchaseFilters(query);
+
+    let page = Number.parseInt(query.page, 10);
+    if (!Number.isInteger(page) || page < 1) {
+        page = 1;
+    }
+
+    let pageSize = Number.parseInt(query.pageSize, 10);
+    if (!PURCHASE_PAGE_SIZES.includes(pageSize)) {
+        pageSize = 10;
+    }
+
+    const conditions = [];
+    const params = [];
+
+    if (username) {
+        params.push(`%${username}%`);
+        conditions.push(`u.username ILIKE $${params.length}`);
+    }
+    appendFilterConditions(conditions, params, {
+        dateFrom,
+        dateTo,
+        status,
+        minAmount,
+        maxAmount,
+        itemType,
+        itemName,
+    });
 
     const whereClause =
         conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -311,24 +358,38 @@ async function listPurchases(query) {
 /*
  * Protegido.
  *
- * Historial de compras del usuario autenticado, paginado, sin filtros,
+ * Historial de compras del usuario autenticado, paginado (10/20/30, default
+ * 10) y filtrable por rango de fechas, estado, rango de monto, tipo de ítem y
+ * nombre de ítem (mismos params y validación que el listado admin),
  * incluyendo los ítems de cada compra. Consumo: Android.
  */
 async function listMyPurchases({ userId, query }) {
+    const filters = parsePurchaseFilters(query);
+
     let page = Number.parseInt(query.page, 10);
     if (!Number.isInteger(page) || page < 1) {
         page = 1;
     }
 
     let pageSize = Number.parseInt(query.pageSize, 10);
-    if (!INTERACTION_PAGE_SIZES.includes(pageSize)) {
-        pageSize = 15;
+    if (!PURCHASE_PAGE_SIZES.includes(pageSize)) {
+        pageSize = 10;
     }
 
+    const params = [userId];
+    const conditions = ["p.user_id = $1"];
+    appendFilterConditions(conditions, params, filters);
+
+    params.push(pageSize);
+    const limitParamIndex = params.length;
+    params.push((page - 1) * pageSize);
+    const offsetParamIndex = params.length;
+
     const rows = await repository.listPurchasesByUserId(pool, {
-        userId,
-        pageSize,
-        offset: (page - 1) * pageSize,
+        whereClause: `WHERE ${conditions.join(" AND ")}`,
+        params,
+        limitParamIndex,
+        offsetParamIndex,
     });
 
     const totalItems = rows.length > 0 ? Number(rows[0].totalItems) : 0;

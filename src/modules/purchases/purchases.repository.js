@@ -231,7 +231,10 @@ async function listPurchases(pool, { whereClause, params, limitParamIndex, offse
     return result.rows;
 }
 
-async function listPurchasesByUserId(pool, { userId, pageSize, offset }) {
+async function listPurchasesByUserId(
+    pool,
+    { whereClause, params, limitParamIndex, offsetParamIndex },
+) {
     const result = await pool.query(
         `
             SELECT
@@ -245,12 +248,12 @@ async function listPurchasesByUserId(pool, { userId, pageSize, offset }) {
                 p.cancelled_at AS "cancelledAt",
                 COUNT(*) OVER() AS "totalItems"
             FROM public.purchase p
-            WHERE p.user_id = $1
+            ${whereClause}
             ORDER BY p.created_at DESC
-            LIMIT $2
-            OFFSET $3;
+            LIMIT $${limitParamIndex}
+            OFFSET $${offsetParamIndex};
         `,
-        [userId, pageSize, offset],
+        params,
     );
 
     return result.rows;
