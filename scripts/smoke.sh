@@ -113,8 +113,8 @@ request "promotions_list" GET "/api/v1/promotions" "$TOKEN_FAN" ""
 echo "== interactions =="
 request "products_interaction_post" POST "/api/v1/products/interaction" "$TOKEN_FAN" '{"productId":1,"rating":5}'
 request "promotions_interaction_post" POST "/api/v1/promotions/interaction" "$TOKEN_FAN" '{"promotionId":1,"rating":4}'
-request "products_interaction_all" GET "/api/v1/products/interaction/all" ""
-request "promotions_interaction_all" GET "/api/v1/promotions/interaction/all" ""
+request "products_interaction_all" GET "/api/v1/products/interaction/all" "$TOKEN_ADMIN"
+request "promotions_interaction_all" GET "/api/v1/promotions/interaction/all" "$TOKEN_ADMIN"
 
 echo "== cart =="
 request "cart_get_empty" GET "/api/v1/cart" "$TOKEN_FAN" ""
@@ -155,7 +155,7 @@ request "parameters_put" PUT "/api/v1/parameters/personalized-notifications" "$T
     '{"enabled":true,"intervalMinutes":60,"repeatDays":7,"startHour":9,"endHour":21,"purchaseSignalWeight":2}'
 
 echo "== recommendations =="
-request "recommendations_train" POST "/api/v1/recommendations/train" "" ""
+request "recommendations_train" POST "/api/v1/recommendations/train" "$TOKEN_ADMIN" ""
 request "products_recommendations" GET "/api/v1/products/recommendations" "$TOKEN_FAN" ""
 request "promotions_recommendations" GET "/api/v1/promotions/recommendations" "$TOKEN_FAN" ""
 
