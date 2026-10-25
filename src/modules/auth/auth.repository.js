@@ -251,6 +251,19 @@ async function updateUserPasswordHash(client, userId, passwordHash) {
     );
 }
 
+async function findUserSessionState(pool, userId) {
+    const result = await pool.query(
+        `
+            SELECT user_type, state
+            FROM public."user"
+            WHERE id = $1;
+        `,
+        [userId],
+    );
+
+    return result.rows[0];
+}
+
 module.exports = {
     createOrReplaceEmailVerification,
     insertUser,
@@ -262,4 +275,5 @@ module.exports = {
     incrementPasswordResetAttempts,
     markPasswordResetUsed,
     updateUserPasswordHash,
+    findUserSessionState,
 };

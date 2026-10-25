@@ -64,7 +64,7 @@ src/
   shared/
     http/                 # response.js (sendSuccess/sendError), asyncHandler.js
     errors/                # AppError.js, error.middleware.js, notFound.middleware.js
-    middlewares/           # authenticateToken.js, requireAdmin.js
+    middlewares/           # authenticateToken.js, requireAdmin.js, requireFan.js
     validation/            # listQuery.js (parseInteractionListQuery), patterns.js (regexes, statuses)
     sql/                   # promotionUnitPrice.js (PROMOTION_UNIT_PRICE_SELECT/JOIN)
   modules/
@@ -74,7 +74,7 @@ src/
     images/                # GET /images
     catalog/               # GET /products, GET /promotions
     catalogAdmin/           # admin/* CRUD of products, promotions, categories, member promotions
-    interactions/          # products/promotions interaction routes (2 public, 2 authenticated)
+    interactions/          # products/promotions interaction routes (2 fan-only, 2 admin-only)
     cart/                  # 6 shopping cart routes
     purchases/             # checkout + history routes, fetchPurchaseItemsByPurchaseIds
     notifications/         # send, log, delete log, personalized/run
@@ -109,6 +109,16 @@ multi-statement transaction instead of relying on autocommit per query.
 `Authorization: Bearer <token>`, verifies with `jwt.verify(token, JWT_SECRET)`, and sets
 `req.authenticatedUser` (JWT payload; user id is `.sub`). Apply it per-route in each module's
 `*.routes.js` — there's no global auth gate, and a few routes are intentionally public (see below).
+Since spec 34 `authenticateToken` is `async` and, after `jwt.verify`, re-checks the user against the
+DB on **every** request (`findUserSessionState` in `auth.repository.js`, `SELECT user_type, state`
+by PK, no cache): a missing user or `state <> 'active'` → `401` "Tu cuenta ya no está disponible.
+Contacta a un administrador." with `data.reason: "account_unavailable"`; a DB `user_type` different
+from the token's `userType` claim → `401` "Tus permisos cambiaron. Inicia sesión nuevamente." with
+`data.reason: "role_changed"`; a missing/invalid/expired token keeps its old messages, now with
+`data.reason: "session_expired"`. Both clients branch on `data.reason` (never on the `message`) to
+pick the text they show on the login screen. A DB error in the lookup fails closed (`500`, via
+Express 5's rejected-promise handling) instead of letting the request through. `req.authenticatedUser`
+is still the JWT payload — now guaranteed consistent with the DB for `userType`.
 Registration hashes passwords with `argon2` and issues an email-verification flow: a raw random token
 is emailed, only its SHA-256 hash is stored in `email_verification`
 (`createOrReplaceEmailVerification` in `src/modules/auth/auth.repository.js`).
@@ -156,6 +166,20 @@ surface (dashboard, notifications, parameters) was gated client-side only. All `
 routes (`catalogAdmin` module below) apply both middlewares via a single `router.use("/api/v1/admin",
 authenticateToken, requireAdmin)` in `catalogAdmin.routes.js`, rather than repeating both on every
 route like other modules do with `authenticateToken` alone.
+
+**Fan authorization** (spec 34): `requireFan` (`src/shared/middlewares/requireFan.js`) is the mirror
+of `requireAdmin` — `403` "Se requiere una cuenta de fan" unless `req.authenticatedUser.userType ===
+1`, always after `authenticateToken`. Outside `/api/v1/admin/*`, both are applied per route:
+
+| Middleware chain | Routes |
+|---|---|
+| `authenticateToken` + `requireAdmin` | `dashboard/*`, `notifications/*`, `parameters/*`, `GET users/fans`, `GET users`, `GET purchases`, `GET purchases/:id`, `PATCH purchases/:id/status`, `GET products/interaction/all`, `GET promotions/interaction/all`, `POST recommendations/train`, `admin/*`, `admin/events*`, `admin/event-types*` |
+| `authenticateToken` + `requireFan` | `cart/*`, `membership/*`, `POST purchases`, `GET purchases/me`, `POST products/interaction`, `POST promotions/interaction`, `GET products/recommendations`, `GET promotions/recommendations`, `PUT`/`DELETE users/me/fcm-token` |
+| `authenticateToken` only (any role) | `GET products`, `GET promotions`, `GET products/:id`, `GET promotions/:id`, `GET events`, `GET events/:id`, `images` |
+| none | `auth/*`, `health` |
+
+When adding a route, pick its row here — a route consumed by only one client must carry that
+client's role middleware.
 
 **Response envelope**: every route responds via `sendSuccess(res, req, { statusCode, message, data })`
 or `sendError(res, req, { statusCode, message, data })` (`src/shared/http/response.js`). Response
@@ -223,8 +247,8 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   wasn't in the spec's own migration section, it surfaced while implementing it.
 - `products/interaction`, `promotions/interaction` — fan engagement tracking (authenticated); this is
   the core product signal the recommender trains on. `products/interaction/all` and
-  `promotions/interaction/all` are the paginated/filterable list equivalents and are intentionally
-  **not** authenticated (see `src/modules/interactions/interactions.routes.js`). Both accept the same
+  `promotions/interaction/all` are the paginated/filterable list equivalents, admin-only since spec 34
+  (`authenticateToken` + `requireAdmin`; they were unauthenticated before). Both accept the same
   query params, validated by the shared `parseInteractionListQuery()` helper
   (`src/shared/validation/listQuery.js`): `username` and
   `productName` (products) / `promotionTitle` (promotions) — free-text `ILIKE '%value%'`, restricted
@@ -279,7 +303,8 @@ needing its own `try { ... } catch (error) { next(error); }` boilerplate.
   referencing `$2` directly in both the `SET` and the `CASE` branches — Postgres can't always infer a
   consistent type for a bare parameter reused across an assignment and a comparison in the same
   statement ("inconsistent types deduced for parameter"), so the CTE pins the type once.
-- `recommendations/train` — manually triggers collaborative filtering; **not authenticated**; no-ops
+- `recommendations/train` — manually triggers collaborative filtering; admin-only since spec 34
+  (`authenticateToken` + `requireAdmin` — the scheduled job runs in-process, not over HTTP); no-ops
   (`{ skipped: true }`) if a run is already in progress
 - `products/recommendations`, `promotions/recommendations` — authenticated; read the precomputed
   recommendation tables, they do not train on request
