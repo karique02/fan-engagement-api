@@ -56,6 +56,8 @@ async function fetchEngagementRawData(pool) {
             SELECT
                 p.id,
                 p.name,
+                p.price,
+                p.description,
                 pc.name AS category_name,
                 COUNT(DISTINCT upi.user_id) AS unique_fans,
                 COALESCE(SUM(upi.interaction_count), 0) AS total_interactions,
@@ -65,7 +67,7 @@ async function fetchEngagementRawData(pool) {
                 ON p.id = upi.product_id
             INNER JOIN public.product_category pc
                 ON pc.id = p.product_category_id
-            GROUP BY p.id, p.name, pc.name
+            GROUP BY p.id, p.name, p.price, p.description, pc.name
             ORDER BY total_interactions DESC, average_rating DESC
             LIMIT 5;
         `),
@@ -73,6 +75,11 @@ async function fetchEngagementRawData(pool) {
             SELECT
                 pr.id,
                 pr.title,
+                pr.description,
+                pr.fixed_price,
+                pr.discount_percentage,
+                pr.buy_quantity,
+                pr.pay_quantity,
                 prc.name AS category_name,
                 COUNT(DISTINCT upi.user_id) AS unique_fans,
                 COALESCE(SUM(upi.interaction_count), 0) AS total_interactions,
@@ -82,7 +89,15 @@ async function fetchEngagementRawData(pool) {
                 ON pr.id = upi.promotion_id
             INNER JOIN public.promotion_category prc
                 ON prc.id = pr.promotion_category_id
-            GROUP BY pr.id, pr.title, prc.name
+            GROUP BY
+                pr.id,
+                pr.title,
+                pr.description,
+                pr.fixed_price,
+                pr.discount_percentage,
+                pr.buy_quantity,
+                pr.pay_quantity,
+                prc.name
             ORDER BY total_interactions DESC, average_rating DESC
             LIMIT 5;
         `),

@@ -2,6 +2,10 @@ const pool = require("../../config/database");
 const AppError = require("../../shared/errors/AppError");
 const repository = require("./dashboard.repository");
 
+function toNullableNumber(value) {
+    return value === null || value === undefined ? null : Number(value);
+}
+
 /*
  * Protegido.
  *
@@ -47,6 +51,8 @@ async function getEngagement() {
     const topProducts = topProductsResult.rows.map((row) => ({
         id: Number(row.id),
         name: row.name,
+        price: Number(row.price),
+        description: row.description ?? null,
         categoryName: row.category_name,
         uniqueFans: Number(row.unique_fans),
         totalInteractions: Number(row.total_interactions),
@@ -56,6 +62,11 @@ async function getEngagement() {
     const topPromotions = topPromotionsResult.rows.map((row) => ({
         id: Number(row.id),
         title: row.title,
+        description: row.description ?? null,
+        fixedPrice: toNullableNumber(row.fixed_price),
+        discountPercentage: toNullableNumber(row.discount_percentage),
+        buyQuantity: toNullableNumber(row.buy_quantity),
+        payQuantity: toNullableNumber(row.pay_quantity),
         categoryName: row.category_name,
         uniqueFans: Number(row.unique_fans),
         totalInteractions: Number(row.total_interactions),
