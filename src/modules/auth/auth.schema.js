@@ -1,4 +1,18 @@
 /*
+ * Devuelve los caracteres acentuados distintos de `value`, en orden de aparición y tal como se
+ * escribieron. "Acentuado" = el carácter normalizado a NFD contiene una marca combinante (\p{M}).
+ */
+function findAccentedCharacters(value) {
+    const found = [];
+    for (const character of value) {
+        if (/\p{M}/u.test(character.normalize("NFD")) && !found.includes(character)) {
+            found.push(character);
+        }
+    }
+    return found;
+}
+
+/*
  * Contrato: { ok: true, value: {...} } | { ok: false, statusCode, message }
  */
 function parseRegisterInput(body) {
@@ -23,6 +37,15 @@ function parseRegisterInput(body) {
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedFullName = fullName.trim();
     const normalizedCellphone = cellphone.trim();
+
+    const accentedCharacters = findAccentedCharacters(username.trim());
+    if (accentedCharacters.length > 0) {
+        return {
+            ok: false,
+            statusCode: 400,
+            message: `El nombre de usuario no puede tener tildes ni letras acentuadas (encontramos: ${accentedCharacters.join(", ")}). Usa solo letras sin tilde, números o guiones bajos.`,
+        };
+    }
 
     if (!/^[a-z0-9_]{3,30}$/.test(normalizedUsername)) {
         return {
